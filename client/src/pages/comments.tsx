@@ -8,11 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
 import {
-  MessageSquare, RefreshCw, Heart, Reply, Search, AlertCircle, Send,
+  MessageSquare, RefreshCw, Heart, Reply, Search, AlertCircle, Send, Filter,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import { Link } from "wouter";
 
 const MAX_CHARS = 500;
 
@@ -31,6 +33,7 @@ function CommentCard({
   onReply,
   liking,
   replying,
+  isNew,
 }: {
   comment: Comment;
   postId: string;
@@ -38,6 +41,7 @@ function CommentCard({
   onReply: (id: string, text: string) => void;
   liking: boolean;
   replying: boolean;
+  isNew: boolean;
 }) {
   const [showReply, setShowReply] = useState(false);
   const [replyText, setReplyText] = useState("");
@@ -50,7 +54,10 @@ function CommentCard({
   };
 
   return (
-    <div className="p-4 rounded-md border border-border space-y-3" data-testid={`card-comment-${comment.id}`}>
+    <div
+      className={`p-4 rounded-md border space-y-3 ${isNew ? "border-l-2 border-l-primary border-border" : "border-border"}`}
+      data-testid={`card-comment-${comment.id}`}
+    >
       <div className="flex items-start gap-3">
         <Avatar className="w-8 h-8 flex-shrink-0">
           <AvatarImage src={comment.profile_picture_url} />
@@ -63,6 +70,7 @@ function CommentCard({
             <span className="text-sm font-medium text-foreground">
               {comment.username ? `@${comment.username}` : "Anonymous"}
             </span>
+            {isNew && <Badge variant="outline" className="text-xs border-primary/30 text-primary">New</Badge>}
             <span className="text-xs text-muted-foreground">
               {formatDistanceToNow(new Date(comment.timestamp), { addSuffix: true })}
             </span>
@@ -136,17 +144,22 @@ function CommentCard({
 export default function Comments() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [postId, setPostId] = useState("");
   const [inputPostId, setInputPostId] = useState("");
+  const [commentSearch, setCommentSearch] = useState("");
   const [likingId, setLikingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
 
-  const { data: status } = useQuery<{ hasToken: boolean }>({ queryKey: ["/api/status"] });
+  const hasToken = !!user?.threadsAccessToken;
 
-  const { data: comments = [], isLoading, error, refetch, isFetching } = useQuery<Comment[]>({
+  const { data: rawComments = [], isLoading, error, refetch, isFetching } = useQuery<Comment[]>({
     queryKey: ["/api/comments", postId],
     queryFn: async () => {
-      const res = await fetch(`/api/comments?postId=${postId}`);
+      const token = localStorage.getItem("tf_token");
+      const res = await fetch(`/api/comments?postId=${postId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || "Failed to fetch comments");
@@ -156,6 +169,11 @@ export default function Comments() {
     enabled: !!postId,
     retry: false,
   });
+
+  const now = Date.now();
+  const comments = commentSearch.trim()
+    ? rawComments.filter(c => c.text?.toLowerCase().includes(commentSearch.toLowerCase()) || c.username?.toLowerCase().includes(commentSearch.toLowerCase()))
+    : rawComments;
 
   const replyMutation = useMutation({
     mutationFn: ({ commentId, content }: { commentId: string; content: string }) =>
@@ -167,7 +185,7 @@ export default function Comments() {
     },
     onError: (err: any) => {
       const msg = err.message?.includes("NO_TOKEN")
-        ? "No API token configured."
+        ? "Connect your Threads account first."
         : err.message || "Failed to send reply";
       toast({ title: "Failed to reply", description: msg, variant: "destructive" });
     },
@@ -182,7 +200,7 @@ export default function Comments() {
     },
     onError: (err: any) => {
       const msg = err.message?.includes("NO_TOKEN")
-        ? "No API token configured."
+        ? "Connect your Threads account first."
         : err.message || "Failed to like comment";
       toast({ title: "Could not like", description: msg, variant: "destructive" });
     },
@@ -201,12 +219,17 @@ export default function Comments() {
         <p className="text-muted-foreground mt-1">View, reply to, and like comments on your posts</p>
       </div>
 
-      {!status?.hasToken && (
+      {!hasToken && (
         <div className="flex items-start gap-3 p-4 rounded-md bg-amber-500/10 border border-amber-500/20">
-          <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-amber-800 dark:text-amber-300">
-            No API token configured. Add your THREADS_ACCESS_TOKEN to fetch and manage comments.
-          </p>
+          <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm text-amber-200">
+              No Threads account connected. Connect your account to fetch and manage comments.
+            </p>
+          </div>
+          <Link href="/settings">
+            <Button size="sm" variant="outline">Connect</Button>
+          </Link>
         </div>
       )}
 
@@ -247,6 +270,19 @@ export default function Comments() {
         </CardContent>
       </Card>
 
+      {postId && !isLoading && rawComments.length > 0 && (
+        <div className="relative">
+          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Filter comments by keyword or username..."
+            value={commentSearch}
+            onChange={e => setCommentSearch(e.target.value)}
+            className="pl-9"
+            data-testid="input-comment-filter"
+          />
+        </div>
+      )}
+
       {isLoading && (
         <div className="space-y-3">
           {[1, 2, 3].map(i => (
@@ -280,7 +316,7 @@ export default function Comments() {
         </Card>
       )}
 
-      {!isLoading && !error && postId && comments.length === 0 && (
+      {!isLoading && !error && postId && rawComments.length === 0 && (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-10 text-center">
             <MessageSquare className="w-8 h-8 text-muted-foreground mb-3" />
@@ -293,20 +329,27 @@ export default function Comments() {
       {!isLoading && comments.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-medium text-foreground">{comments.length} comment{comments.length !== 1 ? "s" : ""}</p>
+            <p className="text-sm font-medium text-foreground">
+              {commentSearch ? `${comments.length} matching comments` : `${comments.length} comment${comments.length !== 1 ? "s" : ""}`}
+            </p>
             <Badge variant="secondary">Post {postId.slice(0, 8)}...</Badge>
           </div>
-          {comments.map(comment => (
-            <CommentCard
-              key={comment.id}
-              comment={comment}
-              postId={postId}
-              onLike={(id) => likeMutation.mutate(id)}
-              onReply={(id, text) => replyMutation.mutate({ commentId: id, content: text })}
-              liking={likingId === comment.id}
-              replying={replyingId === comment.id}
-            />
-          ))}
+          {comments.map((comment, idx) => {
+            const commentAge = now - new Date(comment.timestamp).getTime();
+            const isNew = commentAge < 24 * 60 * 60 * 1000;
+            return (
+              <CommentCard
+                key={comment.id}
+                comment={comment}
+                postId={postId}
+                onLike={(id) => likeMutation.mutate(id)}
+                onReply={(id, text) => replyMutation.mutate({ commentId: id, content: text })}
+                liking={likingId === comment.id}
+                replying={replyingId === comment.id}
+                isNew={isNew}
+              />
+            );
+          })}
         </div>
       )}
 

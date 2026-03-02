@@ -1,0 +1,110 @@
+"Make the following improvements to the ThreadFlow app:
+
+1. 🔐 User Signup / Signin System
+
+Add a Login / Signup screen that appears before the user can access the dashboard
+Signup requires: Email, Password, Confirm Password only (minimum fields)
+Signin requires: Email + Password
+Add basic form validation (email format, password min 8 characters, passwords must match)
+Store users securely in SQLite with hashed passwords (use bcrypt)
+Add a JWT token session so the user stays logged in
+After successful signup → automatically take them to signin page with a success message
+After successful signin → show a "Connect Your Threads Account" modal/page asking for:
+
+THREADS_APP_ID
+THREADS_APP_SECRET
+THREADS_ACCESS_TOKEN
+A helpful note below each field explaining where to find it from Meta Developer Portal
+A "Connect Account" button that saves credentials and verifies connection
+Once connected successfully → redirect to Dashboard
+
+
+Add a Logout button in the sidebar bottom
+If user is not logged in and tries to access any page → redirect to login screen
+
+
+2. 🎨 Logo Redesign
+
+Replace the current wave logo with a stylized @ symbol similar to the Threads app logo
+Use a flowing, slightly italic @ shape in teal/cyan gradient color
+Make it look modern, clean, and visually similar to the Meta Threads app icon style
+Apply this logo in the sidebar top and as the browser favicon
+
+
+3. 🖌️ UI/UX Upgrades
+
+Add subtle gradient background to the sidebar (dark navy to dark teal gradient)
+Add glow effect on the active sidebar menu item
+Make sidebar icons bigger and bolder with clear active vs inactive states
+Add hover animations on all Quick Action cards
+Add a thin teal glowing border on all stat cards on hover
+Make the Dashboard header show the logged-in user's email/name in the top right corner with an avatar initial (e.g. first letter of their email)
+Add a light/dark mode toggle button in the top right header bar
+Add smooth page transition animations when switching between sidebar pages
+Make the app fully mobile responsive with a hamburger menu on smaller screens
+
+
+4. 📊 Dashboard Improvements
+
+Show the connected Threads account username and profile picture once credentials are added
+Add a "Connection Status" badge — green dot if connected, red dot if not
+Show last post published time on the dashboard
+Add a "Quick Post" text box directly on the dashboard for fast posting without going to Compose page
+
+
+5. 💬 Comments Page Improvements
+
+Add a search bar to search through comments by keyword
+Show commenter profile pictures next to each comment
+Add timestamp shown as relative time (e.g. "2 hours ago")
+Highlight unread/new comments with a subtle teal left border
+
+
+6. 📦 Bulk Post Page Improvements
+
+Add a drag-and-drop reorder feature so user can rearrange posts in the queue before sending
+Show a progress bar during bulk posting showing how many posts have been sent vs total
+Add a "Pause Queue" and "Cancel Queue" button during active bulk posting
+
+
+7. ⏰ Follow-Up Page Improvements
+
+Show a countdown timer on the UI for pending follow-ups (e.g. "Follow-up sends in 1h 45m")
+Allow user to cancel a scheduled follow-up before it sends
+After follow-up is sent, show an in-app notification banner: "✅ Follow-up posted! Remember to pin it manually in your Threads app"
+
+
+8. 🔔 Global Notifications
+
+Add a notification bell icon in the top header bar
+Show recent activity: post published, follow-up sent, bulk queue completed
+Use toast notifications (bottom right corner) for all success/error events throughout the app
+
+
+9. ⚙️ Settings Page (New Page)
+
+Add a Settings option in the sidebar
+Settings page includes:
+
+Update Threads API credentials
+Change password
+Delete account option
+Toggle: Enable/Disable email notifications (placeholder for future)
+App version info and GitHub link
+
+
+
+
+10. 📄 README & Open Source Polish
+
+Update README.md with:
+
+ThreadFlow logo at the top
+Full feature list with screenshots section placeholder
+Step-by-step setup guide for Meta Developer App
+How to self-host on Replit
+Contributing guide
+MIT License badge at the top"*
+
+
+

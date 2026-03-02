@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import {
   Plus, Trash2, Play, Layers, CheckCircle2, XCircle, Clock,
-  AlertCircle, ChevronDown, ChevronUp,
+  AlertCircle, ChevronDown, ChevronUp, GripVertical, Pause, Ban,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import type { BulkQueueWithItems } from "@shared/schema";
@@ -41,7 +41,12 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function QueueCard({ queue, onDelete }: { queue: BulkQueueWithItems; onDelete: (id: string) => void }) {
+function QueueCard({ queue, onDelete, onPause, onCancel }: {
+  queue: BulkQueueWithItems;
+  onDelete: (id: string) => void;
+  onPause: (id: string) => void;
+  onCancel: (id: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const sent = queue.items.filter(i => i.status === "sent").length;
   const failed = queue.items.filter(i => i.status === "failed").length;
@@ -62,7 +67,31 @@ function QueueCard({ queue, onDelete }: { queue: BulkQueueWithItems; onDelete: (
               {failed > 0 && <span className="text-destructive"> · {failed} failed</span>}
             </CardDescription>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            {queue.status === "running" && (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onPause(queue.id)}
+                  data-testid={`button-pause-queue-${queue.id}`}
+                  className="h-7 px-2 text-xs"
+                >
+                  <Pause className="w-3 h-3 mr-1" />
+                  Pause
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onCancel(queue.id)}
+                  data-testid={`button-cancel-queue-${queue.id}`}
+                  className="h-7 px-2 text-xs text-destructive"
+                >
+                  <Ban className="w-3 h-3 mr-1" />
+                  Cancel
+                </Button>
+              </>
+            )}
             <Button
               size="icon"
               variant="ghost"
@@ -130,6 +159,7 @@ export default function BulkPost() {
     { id: "1", content: "", mediaUrl: "" },
     { id: "2", content: "", mediaUrl: "" },
   ]);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   const { data: queues = [], isLoading } = useQuery<BulkQueueWithItems[]>({
     queryKey: ["/api/bulk-queues"],
@@ -156,6 +186,15 @@ export default function BulkPost() {
     },
   });
 
+  const updateQueueMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      apiRequest("PATCH", `/api/bulk-queues/${id}`, { status }),
+    onSuccess: (_, { status }) => {
+      toast({ title: status === "paused" ? "Queue paused" : "Queue cancelled" });
+      queryClient.invalidateQueries({ queryKey: ["/api/bulk-queues"] });
+    },
+  });
+
   const addPost = () => {
     setPosts(prev => [...prev, { id: Date.now().toString(), content: "", mediaUrl: "" }]);
   };
@@ -168,6 +207,23 @@ export default function BulkPost() {
   const updatePost = (id: string, field: "content" | "mediaUrl", value: string) => {
     setPosts(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
+
+  const handleDragStart = (e: React.DragEvent, idx: number) => {
+    setDragIndex(idx);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    if (dragIndex === null || dragIndex === idx) return;
+    const newPosts = [...posts];
+    const [dragged] = newPosts.splice(dragIndex, 1);
+    newPosts.splice(idx, 0, dragged);
+    setPosts(newPosts);
+    setDragIndex(idx);
+  };
+
+  const handleDragEnd = () => setDragIndex(null);
 
   const handleStart = () => {
     const validPosts = posts.filter(p => p.content.trim());
@@ -231,9 +287,18 @@ export default function BulkPost() {
 
               <div className="space-y-3">
                 {posts.map((post, idx) => (
-                  <div key={post.id} className="p-4 rounded-md border border-border space-y-3" data-testid={`card-bulk-post-${idx}`}>
+                  <div
+                    key={post.id}
+                    className={`p-4 rounded-md border space-y-3 transition-opacity ${dragIndex === idx ? "opacity-50 border-primary/50" : "border-border"}`}
+                    draggable
+                    onDragStart={e => handleDragStart(e, idx)}
+                    onDragOver={e => handleDragOver(e, idx)}
+                    onDragEnd={handleDragEnd}
+                    data-testid={`card-bulk-post-${idx}`}
+                  >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
+                        <GripVertical className="w-4 h-4 text-muted-foreground cursor-grab" />
                         <div className="flex items-center justify-center w-6 h-6 rounded-full bg-primary/10">
                           <span className="text-xs font-bold text-primary">{idx + 1}</span>
                         </div>
@@ -315,7 +380,13 @@ export default function BulkPost() {
           ) : (
             <div className="space-y-3">
               {queues.map(queue => (
-                <QueueCard key={queue.id} queue={queue} onDelete={id => deleteMutation.mutate(id)} />
+                <QueueCard
+                  key={queue.id}
+                  queue={queue}
+                  onDelete={id => deleteMutation.mutate(id)}
+                  onPause={id => updateQueueMutation.mutate({ id, status: "paused" })}
+                  onCancel={id => updateQueueMutation.mutate({ id, status: "cancelled" })}
+                />
               ))}
             </div>
           )}

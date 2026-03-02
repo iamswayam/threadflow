@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -18,6 +18,24 @@ import {
 } from "lucide-react";
 import { format, addMinutes, addHours } from "date-fns";
 import type { FollowUpThread } from "@shared/schema";
+
+function CountdownTimer({ targetDate }: { targetDate: Date }) {
+  const [remaining, setRemaining] = useState("");
+  useEffect(() => {
+    const update = () => {
+      const diff = targetDate.getTime() - Date.now();
+      if (diff <= 0) { setRemaining("Sending now..."); return; }
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      setRemaining(h > 0 ? `${h}h ${m}m ${s}s` : `${m}m ${s}s`);
+    };
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [targetDate]);
+  return <span className="font-mono text-primary text-xs">{remaining}</span>;
+}
 
 const MAX_CHARS = 500;
 
@@ -311,13 +329,15 @@ export default function FollowUp() {
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                         <StatusIcon status={followUp.status} />
-                        <span>
-                          {followUp.status === "pending"
-                            ? format(new Date(followUp.scheduledAt), "MMM d, h:mm a")
-                            : followUp.status === "published"
-                            ? "Published"
-                            : `Failed: ${followUp.errorMessage}`}
-                        </span>
+                        {followUp.status === "pending" ? (
+                          <span className="flex items-center gap-1">
+                            Sends in <CountdownTimer targetDate={new Date(followUp.scheduledAt)} />
+                          </span>
+                        ) : followUp.status === "published" ? (
+                          <span>Published</span>
+                        ) : (
+                          <span>Failed: {followUp.errorMessage}</span>
+                        )}
                       </div>
                       <Button
                         size="icon"
