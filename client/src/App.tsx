@@ -23,6 +23,7 @@ function ThemeToggle() {
       variant="ghost"
       onClick={toggleTheme}
       data-testid="button-theme-toggle"
+      className="text-muted-foreground"
     >
       {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
     </Button>

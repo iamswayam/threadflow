@@ -13,7 +13,7 @@ const ThemeProviderContext = createContext<ThemeProviderContextType | undefined>
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
     const stored = localStorage.getItem("threadflow-theme") as Theme | null;
-    return stored || "light";
+    return stored || "dark";
   });
 
   useEffect(() => {
