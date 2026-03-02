@@ -1,0 +1,86 @@
+
+2. 📝 Compose & Schedule a Single Post
+
+Rich text compose box (500 char limit with live counter)
+Option to attach image or video
+Two buttons: "Post Now" and "Schedule"
+If Schedule is chosen, show a date-time picker
+Store scheduled posts in SQLite
+APScheduler runs in background and publishes at the chosen time
+Show all upcoming scheduled posts in a "Scheduled Queue" list with ability to edit or cancel
+
+
+3. 📦 Bulk Post (Multiple Threads in Sequence)
+
+A bulk compose section where user can add multiple posts (click "+ Add Thread" to add more)
+Each post has its own text box + optional media
+User sets a delay between posts (e.g. 5 mins, 10 mins, 30 mins, 1 hour — dropdown)
+A "Start Bulk Queue" button fires the first post immediately and schedules the rest using APScheduler with the set delay between each
+Show a live queue status — which posts are pending, sent, or failed
+
+
+4. ⏰ Follow-Up Thread (Timed Reply to Your Own Post)
+
+After a post is published, user can set a follow-up reply
+UI: text box for the follow-up content + a timer selector (30 mins, 1 hour, 2 hours, custom)
+APScheduler posts the follow-up as a reply to the original post at the set time
+Show an in-app notification: "Your follow-up was posted! Don't forget to pin it manually in the Threads app" (Threads API doesn't support pinning yet)
+
+
+5. 💬 Comment Manager (View, Reply & Like)
+
+A dedicated "Comments" page that fetches all replies on the user's posts
+Show each comment with: commenter username, profile picture, comment text, timestamp
+Reply button — opens an inline reply box, sends reply via Threads API
+Like button — likes the comment via Threads API (show graceful error if not supported)
+Refresh button to fetch latest comments
+Filter comments by post (dropdown to select which post's comments to view)
+
+
+6. 📊 Dashboard
+
+Connected account info (username, profile pic, follower count if available)
+Stats: total posts today, scheduled posts pending, bulk queues running
+Recent posts list with status (published / scheduled / failed)
+Quick shortcuts to all pages
+
+
+🔌 Threads API Endpoints to Use
+
+GET https://graph.threads.net/v1.0/me — get user profile
+POST https://graph.threads.net/v1.0/{user_id}/threads — create a post container
+POST https://graph.threads.net/v1.0/{user_id}/threads_publish — publish the post
+GET https://graph.threads.net/v1.0/{post_id}/replies — get replies/comments
+POST https://graph.threads.net/v1.0/{user_id}/threads with reply_to_id — reply to a post
+POST https://graph.threads.net/v1.0/{media_id}/likes — like a comment
+
+
+🎨 UI/UX Requirements
+
+Branding: App name is ThreadFlow with a 🌊 wave theme
+Clean sidebar navigation: Dashboard | Compose | Bulk Post | Follow-Up | Comments
+Light/Dark mode toggle
+Blue/teal/cyan accent colors (water/flow theme)
+Mobile responsive
+Toast notifications for success/error actions
+Loading spinners during API calls
+
+
+📄 README.md Must Include
+
+Project description and features list
+Tech stack
+How to set up Meta Developer App and get API credentials
+How to add .env variables
+How to run locally and on Replit
+Contributing guidelines (since this is open-source)
+MIT License
+
+
+⚙️ Other Requirements
+
+All API keys loaded from .env using python-dotenv
+Error handling for all API calls with user-friendly messages
+Single start command to run the full app on Replit
+MIT License file included
+.gitignore file that excludes .env and sensitive files
