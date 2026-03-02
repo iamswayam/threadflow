@@ -1,0 +1,328 @@
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
+import {
+  MessageSquare, RefreshCw, Heart, Reply, Search, AlertCircle, Send,
+} from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+
+const MAX_CHARS = 500;
+
+interface Comment {
+  id: string;
+  text: string;
+  timestamp: string;
+  username?: string;
+  profile_picture_url?: string;
+}
+
+function CommentCard({
+  comment,
+  postId,
+  onLike,
+  onReply,
+  liking,
+  replying,
+}: {
+  comment: Comment;
+  postId: string;
+  onLike: (id: string) => void;
+  onReply: (id: string, text: string) => void;
+  liking: boolean;
+  replying: boolean;
+}) {
+  const [showReply, setShowReply] = useState(false);
+  const [replyText, setReplyText] = useState("");
+
+  const handleReply = () => {
+    if (!replyText.trim()) return;
+    onReply(comment.id, replyText);
+    setReplyText("");
+    setShowReply(false);
+  };
+
+  return (
+    <div className="p-4 rounded-md border border-border space-y-3" data-testid={`card-comment-${comment.id}`}>
+      <div className="flex items-start gap-3">
+        <Avatar className="w-8 h-8 flex-shrink-0">
+          <AvatarImage src={comment.profile_picture_url} />
+          <AvatarFallback className="bg-primary/10 text-primary text-xs font-bold">
+            {comment.username?.[0]?.toUpperCase() || "?"}
+          </AvatarFallback>
+        </Avatar>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="text-sm font-medium text-foreground">
+              {comment.username ? `@${comment.username}` : "Anonymous"}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {formatDistanceToNow(new Date(comment.timestamp), { addSuffix: true })}
+            </span>
+          </div>
+          <p className="text-sm text-foreground mt-1">{comment.text}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 ml-11">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => onLike(comment.id)}
+          disabled={liking}
+          data-testid={`button-like-${comment.id}`}
+        >
+          <Heart className="w-3.5 h-3.5 mr-1.5" />
+          Like
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => setShowReply(!showReply)}
+          data-testid={`button-reply-toggle-${comment.id}`}
+        >
+          <Reply className="w-3.5 h-3.5 mr-1.5" />
+          Reply
+        </Button>
+      </div>
+
+      {showReply && (
+        <div className="ml-11 space-y-2">
+          <div className="relative">
+            <Textarea
+              placeholder="Write a reply..."
+              value={replyText}
+              onChange={e => setReplyText(e.target.value)}
+              className="resize-none min-h-[80px]"
+              maxLength={MAX_CHARS}
+              data-testid={`textarea-reply-${comment.id}`}
+            />
+            <span className="absolute bottom-2 right-3 text-xs font-mono text-muted-foreground">
+              {replyText.length}/{MAX_CHARS}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={handleReply}
+              disabled={replying || !replyText.trim()}
+              data-testid={`button-send-reply-${comment.id}`}
+            >
+              <Send className="w-3.5 h-3.5 mr-1.5" />
+              {replying ? "Sending..." : "Send Reply"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => { setShowReply(false); setReplyText(""); }}
+              data-testid={`button-cancel-reply-${comment.id}`}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Comments() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [postId, setPostId] = useState("");
+  const [inputPostId, setInputPostId] = useState("");
+  const [likingId, setLikingId] = useState<string | null>(null);
+  const [replyingId, setReplyingId] = useState<string | null>(null);
+
+  const { data: status } = useQuery<{ hasToken: boolean }>({ queryKey: ["/api/status"] });
+
+  const { data: comments = [], isLoading, error, refetch, isFetching } = useQuery<Comment[]>({
+    queryKey: ["/api/comments", postId],
+    queryFn: async () => {
+      const res = await fetch(`/api/comments?postId=${postId}`);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to fetch comments");
+      }
+      return res.json();
+    },
+    enabled: !!postId,
+    retry: false,
+  });
+
+  const replyMutation = useMutation({
+    mutationFn: ({ commentId, content }: { commentId: string; content: string }) =>
+      apiRequest("POST", `/api/comments/${commentId}/reply`, { content }),
+    onMutate: ({ commentId }) => setReplyingId(commentId),
+    onSuccess: () => {
+      toast({ title: "Reply sent!", description: "Your reply is now live on Threads." });
+      refetch();
+    },
+    onError: (err: any) => {
+      const msg = err.message?.includes("NO_TOKEN")
+        ? "No API token configured."
+        : err.message || "Failed to send reply";
+      toast({ title: "Failed to reply", description: msg, variant: "destructive" });
+    },
+    onSettled: () => setReplyingId(null),
+  });
+
+  const likeMutation = useMutation({
+    mutationFn: (commentId: string) => apiRequest("POST", `/api/comments/${commentId}/like`, {}),
+    onMutate: (commentId) => setLikingId(commentId),
+    onSuccess: () => {
+      toast({ title: "Liked!" });
+    },
+    onError: (err: any) => {
+      const msg = err.message?.includes("NO_TOKEN")
+        ? "No API token configured."
+        : err.message || "Failed to like comment";
+      toast({ title: "Could not like", description: msg, variant: "destructive" });
+    },
+    onSettled: () => setLikingId(null),
+  });
+
+  const handleSearch = () => {
+    if (!inputPostId.trim()) return;
+    setPostId(inputPostId.trim());
+  };
+
+  return (
+    <div className="p-6 space-y-6 h-full overflow-y-auto">
+      <div>
+        <h1 className="text-2xl font-bold text-foreground">Comment Manager</h1>
+        <p className="text-muted-foreground mt-1">View, reply to, and like comments on your posts</p>
+      </div>
+
+      {!status?.hasToken && (
+        <div className="flex items-start gap-3 p-4 rounded-md bg-amber-500/10 border border-amber-500/20">
+          <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-amber-800 dark:text-amber-300">
+            No API token configured. Add your THREADS_ACCESS_TOKEN to fetch and manage comments.
+          </p>
+        </div>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Find Post Comments</CardTitle>
+          <CardDescription>Enter a Threads post ID to view its comments</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="relative flex-1 min-w-64">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Post ID (e.g. 18234567890123456)"
+                value={inputPostId}
+                onChange={e => setInputPostId(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleSearch()}
+                className="pl-9"
+                data-testid="input-post-id-search"
+              />
+            </div>
+            <Button onClick={handleSearch} disabled={!inputPostId.trim()} data-testid="button-fetch-comments">
+              <MessageSquare className="w-4 h-4 mr-2" />
+              Fetch Comments
+            </Button>
+            {postId && (
+              <Button
+                variant="outline"
+                onClick={() => refetch()}
+                disabled={isFetching}
+                data-testid="button-refresh-comments"
+              >
+                <RefreshCw className={`w-4 h-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
+                Refresh
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {isLoading && (
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => (
+            <Card key={i}>
+              <CardContent className="py-4">
+                <div className="flex items-start gap-3">
+                  <Skeleton className="w-8 h-8 rounded-full" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-4 w-32" />
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-3/4" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {error && postId && (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-10 text-center">
+            <AlertCircle className="w-8 h-8 text-destructive mb-3" />
+            <p className="text-sm font-medium text-foreground">Failed to load comments</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {(error as Error).message?.includes("NO_TOKEN")
+                ? "API token not configured"
+                : (error as Error).message || "Unknown error"}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && !error && postId && comments.length === 0 && (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-10 text-center">
+            <MessageSquare className="w-8 h-8 text-muted-foreground mb-3" />
+            <p className="text-sm font-medium text-foreground">No comments found</p>
+            <p className="text-xs text-muted-foreground mt-1">This post doesn't have any comments yet</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && comments.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-foreground">{comments.length} comment{comments.length !== 1 ? "s" : ""}</p>
+            <Badge variant="secondary">Post {postId.slice(0, 8)}...</Badge>
+          </div>
+          {comments.map(comment => (
+            <CommentCard
+              key={comment.id}
+              comment={comment}
+              postId={postId}
+              onLike={(id) => likeMutation.mutate(id)}
+              onReply={(id, text) => replyMutation.mutate({ commentId: id, content: text })}
+              liking={likingId === comment.id}
+              replying={replyingId === comment.id}
+            />
+          ))}
+        </div>
+      )}
+
+      {!postId && !isLoading && (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <div className="flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 mb-4">
+              <MessageSquare className="w-7 h-7 text-primary" />
+            </div>
+            <p className="text-base font-medium text-foreground">Enter a Post ID to get started</p>
+            <p className="text-sm text-muted-foreground mt-1 max-w-xs">
+              Copy the post ID from your Threads app and paste it above to view and manage comments
+            </p>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
