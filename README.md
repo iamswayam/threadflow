@@ -1,12 +1,13 @@
-# ThreadFlow
+# ThreadFlow 🌊
 
 <p align="center">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License" />
   <img src="https://img.shields.io/badge/Stack-React%20%2B%20Express%20%2B%20PostgreSQL-teal" alt="Stack" />
   <img src="https://img.shields.io/badge/Status-Active-brightgreen" alt="Status" />
+  <img src="https://img.shields.io/badge/Threads-API-black" alt="Threads API" />
 </p>
 
-**ThreadFlow** is a full-stack social media management app for [Meta Threads](https://www.threads.net). Schedule posts, send bulk threads in sequence, manage follow-up replies, and handle comments — all from one clean dashboard.
+**ThreadFlow** is a full-stack open-source social media management app for [Meta Threads](https://www.threads.net). Schedule posts, send bulk threads in sequence, manage follow-up replies, and handle comments — all from one clean dashboard.
 
 ---
 
@@ -69,7 +70,7 @@ npm install
 
 ### 3. Set Environment Variables
 
-Create a `.env` file or set these environment variables:
+Create a `.env` file in the root directory:
 
 ```env
 DATABASE_URL=postgresql://user:password@localhost:5432/threadflow
@@ -96,34 +97,146 @@ The app runs on **http://localhost:5000**
 
 ---
 
-## Setting Up Meta Threads API
+## Connecting Your Threads Account
 
-To enable live posting, you need credentials from the [Meta Developer Portal](https://developers.facebook.com/apps/).
+### Step 1: Make Sure Your Instagram is a Professional Account
 
-### Step 1: Create a Meta App
+1. Open your **Instagram app**
+2. Go to **Settings → Account**
+3. Tap **"Switch to Professional Account"**
+4. Choose **Creator** or **Business** and complete setup
 
-1. Go to [developers.facebook.com/apps](https://developers.facebook.com/apps/)
-2. Click **Create App** → choose **Business** type
-3. Enable **Threads API** under your app's products
+> Threads automatically follows your Instagram account type — once Instagram is Professional, Threads is too ✅
 
-### Step 2: Generate an Access Token
+---
 
-1. In your app, go to **Threads API** → **Permissions**
-2. Enable: `threads_basic`, `threads_content_publish`, `threads_manage_replies`, `threads_read_replies`, `threads_manage_insights`
-3. Go to **Threads API** → **Generate Token**
-4. Click **Generate Token** and copy the **Long-Lived Access Token**
+### Step 2: Create a Meta Developer Account & App
 
-### Step 3: Connect in ThreadFlow
+1. Go to **[developers.facebook.com](https://developers.facebook.com)**
+2. Click **"Get Started"** (top right) and log in with your **personal Facebook account**
+3. Accept Meta Platform Policies and complete verification
+4. Once logged in, click **"My Apps"** → **"Create App"**
+5. Select:
+   - What do you want to build? → **Other**
+   - App type → **None**
+   - App name → `ThreadFlow` (or anything you like)
+   - Contact email → your email
+6. Click **"Create App"**
+
+---
+
+### Step 3: Add Threads API to Your App
+
+1. On your app dashboard, scroll down to **"Add Products to Your App"**
+2. Find **"Threads API"** → click **"Set Up"**
+3. Threads API will now appear in your left sidebar
+
+---
+
+### Step 4: Enable Required Permissions
+
+1. Left sidebar → **Threads API → Use Cases**
+2. Click **"Edit"** next to "Authentication and Permissions"
+3. Enable these 5 permissions by clicking **"Add"** next to each:
+   - ✅ `threads_basic`
+   - ✅ `threads_content_publish`
+   - ✅ `threads_manage_replies`
+   - ✅ `threads_read_replies`
+   - ✅ `threads_manage_insights`
+
+---
+
+### Step 5: Link Your Threads Account to a Facebook Page
+
+> This is required by Meta to authenticate your Threads account via the API.
+
+**Create a Facebook Page:**
+1. Open Facebook → tap **Menu (☰)** → **Pages** → **Create**
+2. Name it anything (e.g. your brand name)
+3. Category: Creator, Brand, or Personal Blog
+4. Tap **Done**
+
+**Link Instagram to Facebook Page:**
+1. Open your **Instagram app** (the account you use for Threads)
+2. Go to **Settings → Accounts Centre**
+3. Tap **"Add Facebook Account"**
+4. Log in with your **personal Facebook credentials**
+5. Select the **Facebook Page** you just created → Confirm
+
+> ⚠️ Privacy Note: Your Facebook friends will NOT see this page or be notified. You can keep the page unpublished by going to Page Settings → Visibility → Page Unpublished. It is only used as a silent technical bridge for the API.
+
+---
+
+### Step 6: Add Your Threads Account as a Tester
+
+1. In Meta Developer Portal → left sidebar → **App Roles → Roles**
+2. Click **"Add Testers"**
+3. Type your **Threads/Instagram username** and submit
+
+**Accept the invite on your phone:**
+1. Open **Threads app** on your phone
+2. Switch to your Threads account
+3. Go to **Settings (⚙️) → Account → Website Permissions**
+4. You'll see a pending invite → tap **"Accept"**
+
+---
+
+### Step 7: Generate Your Access Token
+
+1. Left sidebar → **Threads API → Use Cases**
+2. Scroll down to **"Generate Token"**
+3. Your Threads account will appear — click **"Generate Token"** next to it
+4. A popup opens — log in with your Threads/Instagram credentials
+5. Accept all permissions → click **"Allow"**
+6. **Copy the long token that appears immediately** and save it safely
+
+---
+
+### Step 8: Get Your App ID & App Secret
+
+1. Left sidebar → **App Settings → Basic**
+2. Copy your **App ID** at the top
+3. Click **"Show"** next to App Secret → copy it
+
+---
+
+### Step 9: Connect in ThreadFlow
 
 1. Sign up / Sign in to ThreadFlow
-2. You'll be prompted to **Connect your Threads Account**
+2. Click **"Connect Now"** on the dashboard banner
 3. Paste your:
-   - **Access Token** (required)
-   - **App ID** (optional — found in App Settings → Basic)
-   - **App Secret** (optional — found in App Settings → Basic)
-4. Click **Connect Account**
+   - **Access Token** ← required
+   - **App ID** ← required
+   - **App Secret** ← required
+4. Click **"Connect Account"**
 
-ThreadFlow will verify your token by fetching your profile. Once connected, all scheduling and posting features are live.
+Once connected you'll see:
+- ✅ Your Threads profile picture and username on the dashboard
+- ✅ Green **"Connected"** status dot
+- ✅ All features unlocked!
+
+---
+
+## ⚠️ Important Notes
+
+| Topic | Details |
+|---|---|
+| **Token expiry** | Access tokens expire in **60 days** — regenerate when expired |
+| **Rate limits** | 250 posts + 1,000 replies per 24 hours |
+| **App mode** | App starts in **Development mode** — only testers can use it |
+| **Live mode** | To let others use it, submit for **Meta App Review** |
+| **Pinning** | Threads API does not support pinning — pin manually in the Threads app after follow-up posts |
+
+---
+
+## Common Errors & Fixes
+
+| Error | Fix |
+|---|---|
+| `Could not connect: Tried accessing nonexisting field (followers_count)` | Remove `followers_count` from the fields in `server/threads.ts` |
+| `Invalid OAuth access token` | Token copied incorrectly — regenerate it |
+| `User not authorized` | Threads account not added as tester — redo Step 6 |
+| `Permission denied` | Not all permissions granted — redo Step 4 |
 
 ---
 

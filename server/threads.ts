@@ -19,9 +19,9 @@ async function threadsRequest(token: string, path: string, options: RequestInit 
 
 export async function getProfile(token: string): Promise<{
   id: string; username: string; name: string;
-  threads_profile_picture_url?: string; threads_biography?: string; followers_count?: number;
+  threads_profile_picture_url?: string; threads_biography?: string;
 }> {
-  return threadsRequest(token, "/me?fields=id,username,name,threads_profile_picture_url,threads_biography,followers_count");
+  return threadsRequest(token, "/me?fields=id,username,name,threads_profile_picture_url,threads_biography");
 }
 
 export async function createPostContainer(token: string, userId: string, params: {
