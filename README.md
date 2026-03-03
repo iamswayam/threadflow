@@ -29,6 +29,7 @@
 - **Thread Chain publishing** - Publish connected multi-post chains
 - **Analytics dashboard** - Account totals with time-window filter (24h, 48h, 7d, 30d)
 - **Post Performance controls** - Metric selector plus post count selector (10, 50, 100)
+- **Post timeline labels** - Month markers shown below bars; partial carry-over months are hidden and week labels are omitted
 - **Settings Page** - Update API credentials, change password, delete account
 - **Mobile Responsive** - Collapsible sidebar with hamburger menu
 
