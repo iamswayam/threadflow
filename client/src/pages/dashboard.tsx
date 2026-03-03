@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -11,13 +12,89 @@ import { Link } from "wouter";
 import {
   Clock, Layers, CheckCircle2, Timer, MessageSquare, ArrowRight,
   PenSquare, Send, Zap, TrendingUp, Hash, X, BarChart2, Repeat2,
-  Quote, Link2, ExternalLink,
+  Quote, Link2, ExternalLink, Sparkles, WandSparkles, Users,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { ScheduledPost, BulkQueueWithItems, FollowUpThread } from "@shared/schema";
 import { formatDistanceToNow, format } from "date-fns";
+
+type AiRole = "user" | "assistant";
+type AiChatMessage = {
+  id: number;
+  role: AiRole;
+  content: string;
+};
+
+type QuickPostDraft = {
+  id: number;
+  text: string;
+};
+
+type AiProviderOption = {
+  provider: string;
+  label: string;
+  models: string[];
+};
+
+type AiKeyStatus = {
+  openaiConfigured: boolean;
+  anthropicConfigured: boolean;
+  geminiConfigured: boolean;
+  perplexityConfigured: boolean;
+};
+
+function getFriendlyAiError(err: unknown): string {
+  const fallback = "AI request failed. Please try again.";
+  const rawMessage = typeof (err as any)?.message === "string" ? (err as any).message : "";
+  if (!rawMessage) return fallback;
+
+  let message = rawMessage.replace(/^\d+\s*:\s*/, "").trim();
+
+  if (message.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(message);
+      if (typeof parsed?.error === "string" && parsed.error.trim()) {
+        message = parsed.error.trim();
+      } else if (typeof parsed?.message === "string" && parsed.message.trim()) {
+        message = parsed.message.trim();
+      }
+    } catch {
+      // keep original message
+    }
+  }
+
+  const lower = message.toLowerCase();
+
+  if (
+    lower.includes("exceeded your current quota") ||
+    lower.includes("insufficient_quota") ||
+    lower.includes("billing")
+  ) {
+    return "Quota exceeded for this provider. Check billing/usage limits, or switch provider/model.";
+  }
+  if (lower.includes("invalid api key") || lower.includes("incorrect api key")) {
+    return "Invalid API key for selected provider. Check .env key and restart server.";
+  }
+  if (lower.includes("not configured on server")) {
+    return "This provider is not configured. Add its API key in .env and restart server.";
+  }
+  if (
+    lower.includes("model") &&
+    (lower.includes("not found") || lower.includes("not available") || lower.includes("does not exist"))
+  ) {
+    return "Selected model is unavailable for this account. Choose another model.";
+  }
+  if (lower.includes("rate limit") || lower.includes("too many requests")) {
+    return "Rate limit reached. Wait a moment and try again.";
+  }
+  if (lower.includes("provider returned empty response")) {
+    return "Provider returned empty output. Try again or switch model/provider.";
+  }
+
+  return message || fallback;
+}
 
 const POPULAR_TOPICS = [
   "Astrology Threads", "Motivation Threads", "Business Threads",
@@ -82,7 +159,12 @@ function ProfileCard() {
     );
   }
 
-  const displayProfile = profile || { username: user?.threadsUsername, threads_profile_picture_url: user?.threadsProfilePicUrl };
+  const displayProfile = profile || {
+    name: undefined,
+    username: user?.threadsUsername,
+    threads_profile_picture_url: user?.threadsProfilePicUrl,
+    followers_count: user?.threadsFollowerCount,
+  };
   if (!displayProfile?.username) return null;
 
   return (
@@ -95,7 +177,18 @@ function ProfileCard() {
           </AvatarFallback>
         </Avatar>
         <div className="flex-1 min-w-0">
-          <p className="font-bold text-foreground">@{displayProfile.username}</p>
+          <p className="font-bold text-foreground">
+            {displayProfile.name || displayProfile.username}
+            <span className="text-sm text-muted-foreground font-medium ml-1">@{displayProfile.username}</span>
+          </p>
+          <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
+            <Users className="w-3.5 h-3.5" />
+            <span>
+              {typeof displayProfile.followers_count === "number"
+                ? `${displayProfile.followers_count.toLocaleString()} followers`
+                : "Followers unavailable"}
+            </span>
+          </div>
           {displayProfile.threads_biography && (
             <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{displayProfile.threads_biography}</p>
           )}
@@ -120,15 +213,26 @@ function ProfileCard() {
 }
 
 // ─── Quick Post with topic ABOVE textarea ────────────────────────────────────
-function QuickPost() {
+function QuickPost({
+  injectedDraft,
+}: {
+  injectedDraft: QuickPostDraft | null;
+}) {
   const [content, setContent] = useState("");
   const [topicInput, setTopicInput] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const { toast } = useToast();
   const { user } = useAuth();
 
-  // Pre-fill with user's default topic
-  useState(() => { setTopicInput(user?.defaultTopic || ""); });
+  useEffect(() => {
+    setTopicInput(user?.defaultTopic || "");
+  }, [user?.defaultTopic]);
+
+  useEffect(() => {
+    if (!injectedDraft?.text) return;
+    setContent(injectedDraft.text);
+    setShowSuggestions(false);
+  }, [injectedDraft?.id, injectedDraft?.text]);
 
   const filteredTopics = POPULAR_TOPICS.filter(t =>
     t.toLowerCase().includes(topicInput.toLowerCase()) && t !== topicInput
@@ -150,14 +254,14 @@ function QuickPost() {
 
   return (
     <Card>
-      <CardHeader className="pb-3">
+      <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <Zap className="w-4 h-4 text-primary" />
           Quick Post
         </CardTitle>
-        <CardDescription>Post directly to Threads right now</CardDescription>
+        <CardDescription className="text-xs">Post directly to Threads right now</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2.5">
 
         {/* ✅ Topic dropdown ABOVE the post box */}
         <div className="relative">
@@ -195,9 +299,6 @@ function QuickPost() {
             </div>
           )}
 
-          {topicInput && (
-            <p className="text-xs text-primary mt-1 px-1">Will show as ✦ {topicInput}</p>
-          )}
         </div>
 
         {/* Post textarea */}
@@ -207,10 +308,10 @@ function QuickPost() {
           onChange={e => setContent(e.target.value)}
           onFocus={() => setShowSuggestions(false)}
           disabled={!user?.threadsAccessToken}
-          rows={3}
+          rows={2}
           maxLength={500}
           data-testid="textarea-quick-post"
-          className="resize-none"
+          className="resize-none min-h-[82px]"
         />
 
         <div className="flex items-center justify-between">
@@ -231,6 +332,208 @@ function QuickPost() {
 }
 
 // ─── Recent Posts with Repost / Quote ────────────────────────────────────────
+function AiPostAssistant({
+  onUseDraft,
+}: {
+  onUseDraft: (draft: string) => void;
+}) {
+  const { toast } = useToast();
+  const [messages, setMessages] = useState<AiChatMessage[]>([]);
+  const [prompt, setPrompt] = useState("");
+  const [provider, setProvider] = useState("");
+  const [model, setModel] = useState("");
+
+  const { data: providers = [], isLoading: loadingProviders } = useQuery<AiProviderOption[]>({
+    queryKey: ["/api/ai/providers"],
+    queryFn: () => apiRequest("GET", "/api/ai/providers"),
+  });
+
+  useEffect(() => {
+    if (!providers.length) {
+      setProvider("");
+      setModel("");
+      return;
+    }
+
+    if (!provider || !providers.some((p) => p.provider === provider)) {
+      const first = providers[0];
+      setProvider(first.provider);
+      setModel(first.models[0] || "");
+      return;
+    }
+
+    const current = providers.find((p) => p.provider === provider);
+    if (current && (!model || !current.models.includes(model))) {
+      setModel(current.models[0] || "");
+    }
+  }, [providers, provider, model]);
+
+  const { mutateAsync: askAi, isPending } = useMutation({
+    mutationFn: (payload: {
+      provider: string;
+      model: string;
+      message: string;
+      history: Array<{ role: AiRole; content: string }>;
+    }) =>
+      apiRequest("POST", "/api/ai/chat", payload),
+  });
+
+  const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  const selectedProvider = providers.find((p) => p.provider === provider);
+
+  const sendPrompt = async (rawPrompt?: string) => {
+    const message = (rawPrompt ?? prompt).trim();
+    if (!message) return;
+    if (!provider || !model) {
+      toast({ title: "Choose provider/model first", variant: "destructive" });
+      return;
+    }
+
+    const history = messages.slice(-8).map((m) => ({ role: m.role, content: m.content }));
+    const userMessage: AiChatMessage = { id: Date.now(), role: "user", content: message };
+    setMessages((prev) => [...prev, userMessage]);
+    setPrompt("");
+
+    try {
+      const result = await askAi({ provider, model, message, history });
+      const reply = typeof result?.reply === "string" ? result.reply.trim() : "";
+      if (!reply) throw new Error("Empty response from AI");
+      setMessages((prev) => [...prev, { id: Date.now() + 1, role: "assistant", content: reply }]);
+    } catch (err: any) {
+      const msg = getFriendlyAiError(err);
+      toast({ title: "AI request failed", description: msg, variant: "destructive" });
+      setMessages((prev) => [...prev, { id: Date.now() + 1, role: "assistant", content: "I could not generate right now. Please try again." }]);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-primary" />
+          AI Post Assistant
+        </CardTitle>
+        <CardDescription className="text-xs">Draft hooks, rewrites, and full post ideas</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <Select value={provider} onValueChange={setProvider} disabled={loadingProviders || !providers.length || isPending}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Provider" />
+            </SelectTrigger>
+            <SelectContent>
+              {providers.map((p) => (
+                <SelectItem key={p.provider} value={p.provider}>
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={model} onValueChange={setModel} disabled={!selectedProvider || isPending}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Model" />
+            </SelectTrigger>
+            <SelectContent>
+              {(selectedProvider?.models || []).map((m) => (
+                <SelectItem key={m} value={m}>
+                  {m}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {!providers.length && !loadingProviders && (
+          <div className="rounded-md border border-border p-2 text-xs text-muted-foreground">
+            No AI provider API keys found. Add any of these in `.env`:
+            <span className="block mt-1 font-mono text-[11px]">
+              OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_AI_API_KEY (or GEMINI_API_KEY), PERPLEXITY_API_KEY
+            </span>
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-1.5">
+          {[
+            "Write 5 hooks for this topic",
+            "Rewrite this in stronger tone",
+            "Make this under 280 chars",
+          ].map((preset) => (
+            <Button
+              key={preset}
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 text-[11px]"
+              disabled={isPending || !providers.length}
+              onClick={() => void sendPrompt(preset)}
+            >
+              <WandSparkles className="w-3 h-3 mr-1.5" />
+              {preset}
+            </Button>
+          ))}
+        </div>
+
+        <div className="h-[170px] overflow-y-auto rounded-md border border-border bg-muted/20 p-2 space-y-2">
+          {messages.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Ask for post drafts, thread ideas, CTA variants, hashtag sets, or tone rewrites.
+            </p>
+          ) : (
+            messages.map((message) => (
+              <div
+                key={message.id}
+                className={`rounded-md px-2.5 py-2 text-xs leading-relaxed ${
+                  message.role === "user"
+                    ? "ml-5 bg-primary/10 text-foreground"
+                    : "mr-5 bg-background border border-border text-foreground"
+                }`}
+              >
+                {message.content}
+              </div>
+            ))
+          )}
+        </div>
+
+        <Textarea
+          rows={2}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Example: Write a short Threads post about discipline and consistency."
+          className="resize-none min-h-[82px]"
+        />
+
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">Generate, then send to Quick Post</span>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!latestAssistant?.content}
+              onClick={() => {
+                if (!latestAssistant?.content) return;
+                onUseDraft(latestAssistant.content);
+                toast({ title: "Inserted", description: "AI draft moved to Quick Post." });
+              }}
+            >
+              Use in Quick Post
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={isPending || !prompt.trim() || !providers.length}
+              onClick={() => void sendPrompt()}
+            >
+              {isPending ? "Generating..." : "Generate"}
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function RecentPosts() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -358,6 +661,7 @@ function RecentPosts() {
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
+  const [quickPostDraft, setQuickPostDraft] = useState<QuickPostDraft | null>(null);
   const { data: scheduledPosts = [], isLoading: loadingScheduled } = useQuery<ScheduledPost[]>({ queryKey: ["/api/posts/scheduled"] });
   const { data: bulkQueues = [], isLoading: loadingBulk } = useQuery<BulkQueueWithItems[]>({ queryKey: ["/api/bulk-queues"] });
   const { data: followUps = [], isLoading: loadingFollowUps } = useQuery<FollowUpThread[]>({ queryKey: ["/api/follow-ups"] });
@@ -383,6 +687,10 @@ export default function Dashboard() {
     { label: "Follow-Up", href: "/followup", icon: Timer, desc: "Schedule a timed reply" },
     { label: "Comments", href: "/comments", icon: MessageSquare, desc: "Manage replies and likes" },
   ];
+
+  const injectDraftIntoQuickPost = (text: string) => {
+    setQuickPostDraft({ id: Date.now(), text });
+  };
 
   return (
     <div className="p-6 space-y-6 h-full overflow-y-auto">
@@ -413,9 +721,11 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
         {/* ✅ Topic dropdown is now INSIDE QuickPost, above the textarea */}
-        <QuickPost />
+        <QuickPost injectedDraft={quickPostDraft} />
+
+        <AiPostAssistant onUseDraft={injectDraftIntoQuickPost} />
 
         <Card>
           <CardHeader className="pb-3">

@@ -30,6 +30,10 @@
 - **Analytics dashboard** - Account totals with time-window filter (24h, 48h, 7d, 30d)
 - **Post Performance controls** - Metric selector plus post count selector (10, 50, 100)
 - **Post timeline labels** - Month markers shown below bars; partial carry-over months are hidden and week labels are omitted
+- **Audience Persona panel** - Follower demographics by country, city, age range, and gender (requires Threads demographics eligibility)
+- **Global audience map** - Full-width world map with country shading by follower count
+- **Full-form demographic labels** - Country and gender labels normalized to readable names (for example, United States, India, Female, Male)
+- **Follower count clarity** - Persona cards and rows explicitly show follower counts and percentages
 - **Settings Page** - Update API credentials, change password, delete account
 - **Mobile Responsive** - Collapsible sidebar with hamburger menu
 
@@ -43,6 +47,7 @@
 | Animations | Framer Motion |
 | Data Fetching | TanStack Query v5 |
 | Routing | Wouter |
+| Maps | react-simple-maps (world map visualization) |
 | Backend | Express.js + TypeScript |
 | Database | PostgreSQL via Drizzle ORM |
 | Auth | bcrypt + JSON Web Tokens |
@@ -230,6 +235,9 @@ Once connected you'll see:
 | **Insights permission** | `threads_manage_insights` must be enabled in your Meta app for analytics |
 | **Insights freshness** | Threads insights are daily aggregated and can lag behind real-time activity |
 | **Post insights scale** | `/api/analytics` returns selected posts, but detailed per-post insights are fetched for first 100 posts |
+| **Persona eligibility** | `follower_demographics` requires at least 100 followers; otherwise persona panel shows an eligibility message |
+| **Persona time granularity** | Audience Persona uses current/lifetime demographic snapshots (not day-by-day or month-by-month) |
+| **Map rendering** | Global map uses country-level follower data from persona demographics |
 | **Pinning** | Threads API does not support pinning - pin manually in the Threads app after follow-up posts |
 
 ---
@@ -304,6 +312,7 @@ Once connected you'll see:
 | GET | `/api/follow-ups` | List follow-up threads |
 | POST | `/api/thread-chain` | Publish a multi-post thread chain |
 | GET | `/api/analytics?since=&until=&postsLimit=` | Account analytics + post performance data |
+| GET | `/api/analytics/persona` | Audience persona demographics + segment mapping payload |
 | GET | `/api/comments?postId=` | Fetch post comments |
 | POST | `/api/comments/:id/reply` | Reply to a comment |
 | POST | `/api/comments/:id/like` | Like a comment |

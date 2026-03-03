@@ -6,6 +6,18 @@ import { requireAuth, hashPassword, verifyPassword, signToken } from "./auth";
 
 function getUser(req: Request) { return (req as any).user as { userId: string; email: string }; }
 
+function sanitizeUserForClient(user: any) {
+  const {
+    password: _password,
+    aiOpenaiApiKey: _aiOpenaiApiKey,
+    aiAnthropicApiKey: _aiAnthropicApiKey,
+    aiGoogleApiKey: _aiGoogleApiKey,
+    aiPerplexityApiKey: _aiPerplexityApiKey,
+    ...safeUser
+  } = user;
+  return safeUser;
+}
+
 function normalizeInsightsTimeParam(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const raw = value.trim();
@@ -28,6 +40,285 @@ function normalizePostsLimit(value: unknown): number {
   const allowed = new Set([10, 50, 100]);
   const raw = typeof value === "string" ? Number(value) : Number.NaN;
   return allowed.has(raw) ? raw : 10;
+}
+
+function normalizeBooleanFlag(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const raw = value.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+function normalizeReplyCenterDays(value: unknown): number {
+  const raw = typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(raw)) return 7;
+  return Math.min(Math.max(Math.floor(raw), 1), 30);
+}
+
+function normalizeReplyCenterPostsLimit(value: unknown): number {
+  const allowed = new Set([10, 25, 50]);
+  const raw = typeof value === "string" ? Number(value) : Number.NaN;
+  return allowed.has(raw) ? raw : 25;
+}
+
+function normalizeReplyCenterRepliesPerPost(value: unknown): number {
+  const raw = typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(raw)) return 100;
+  return Math.min(Math.max(Math.floor(raw), 25), 200);
+}
+
+function toTimestampMs(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return null;
+  return ms;
+}
+
+function calculateToxicityRisk(text: string | undefined): { score: number; level: "low" | "medium" | "high" } {
+  const value = (text || "").toLowerCase();
+  if (!value) return { score: 0, level: "low" };
+
+  const severeTerms = ["kill", "die", "hate", "fraud", "scam"];
+  const abuseTerms = ["idiot", "stupid", "dumb", "trash", "nonsense", "worst", "shut up"];
+  let score = 0;
+
+  for (const token of severeTerms) {
+    if (value.includes(token)) score += 25;
+  }
+  for (const token of abuseTerms) {
+    if (value.includes(token)) score += 12;
+  }
+
+  const punctuationHits = ((text || "").match(/[!?]/g) || []).length;
+  if (punctuationHits >= 4) score += 8;
+
+  const uppercaseChars = (text || "").replace(/[^A-Z]/g, "").length;
+  const alphaChars = (text || "").replace(/[^A-Za-z]/g, "").length;
+  if (alphaChars >= 12 && uppercaseChars / alphaChars > 0.55) score += 12;
+
+  score = Math.min(score, 100);
+  if (score >= 60) return { score, level: "high" };
+  if (score >= 30) return { score, level: "medium" };
+  return { score, level: "low" };
+}
+
+type AiProvider = "openai" | "anthropic" | "gemini" | "perplexity";
+type AiRole = "user" | "assistant";
+type AiHistoryMessage = { role: AiRole; content: string };
+
+const AI_SYSTEM_PROMPT =
+  "You are a social media writing assistant for Threads. Provide concise, clear, high-engagement drafts. " +
+  "When relevant, include 3-5 variants and keep each variant ready to post.";
+
+const AI_PROVIDER_CATALOG: Record<
+  AiProvider,
+  { label: string; envKeys: string[]; models: string[]; defaultModel: string }
+> = {
+  openai: {
+    label: "ChatGPT (OpenAI)",
+    envKeys: ["OPENAI_API_KEY"],
+    models: [
+      "gpt-5.2",
+      "gpt-5.2-chat-latest",
+      "gpt-5.2-pro",
+      "gpt-5-mini",
+      "gpt-5-nano",
+      "gpt-4.1",
+    ],
+    defaultModel: "gpt-5.2",
+  },
+  anthropic: {
+    label: "Claude (Anthropic)",
+    envKeys: ["ANTHROPIC_API_KEY"],
+    models: ["claude-3-5-haiku-latest", "claude-3-7-sonnet-latest"],
+    defaultModel: "claude-3-5-haiku-latest",
+  },
+  gemini: {
+    label: "Gemini (Google)",
+    envKeys: ["GOOGLE_AI_API_KEY", "GEMINI_API_KEY"],
+    models: ["gemini-2.0-flash", "gemini-1.5-pro"],
+    defaultModel: "gemini-2.0-flash",
+  },
+  perplexity: {
+    label: "Perplexity",
+    envKeys: ["PERPLEXITY_API_KEY"],
+    models: ["sonar", "sonar-pro"],
+    defaultModel: "sonar",
+  },
+};
+
+function getEnvKeyValue(keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function normalizeApiKey(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  return normalized.slice(0, 500);
+}
+
+function getUserProviderApiKey(user: any, provider: AiProvider): string | undefined {
+  if (provider === "openai") return normalizeApiKey(user?.aiOpenaiApiKey);
+  if (provider === "anthropic") return normalizeApiKey(user?.aiAnthropicApiKey);
+  if (provider === "gemini") return normalizeApiKey(user?.aiGoogleApiKey);
+  if (provider === "perplexity") return normalizeApiKey(user?.aiPerplexityApiKey);
+  return undefined;
+}
+
+function getEffectiveProviderApiKey(user: any, provider: AiProvider): string | undefined {
+  return getUserProviderApiKey(user, provider) || getEnvKeyValue(AI_PROVIDER_CATALOG[provider].envKeys);
+}
+
+function getConfiguredAiProviders(user?: any): Array<{ provider: AiProvider; label: string; models: string[]; defaultModel: string }> {
+  return (Object.keys(AI_PROVIDER_CATALOG) as AiProvider[])
+    .filter((provider) => !!getEffectiveProviderApiKey(user, provider))
+    .map((provider) => ({
+      provider,
+      label: AI_PROVIDER_CATALOG[provider].label,
+      models: AI_PROVIDER_CATALOG[provider].models,
+      defaultModel: AI_PROVIDER_CATALOG[provider].defaultModel,
+    }));
+}
+
+function sanitizeAiHistory(input: unknown): AiHistoryMessage[] {
+  if (!Array.isArray(input)) return [];
+  const cleaned = input
+    .map((item) => {
+      const role = item && typeof item === "object" ? (item as any).role : undefined;
+      const content = item && typeof item === "object" ? (item as any).content : undefined;
+      if ((role !== "user" && role !== "assistant") || typeof content !== "string") return null;
+      const text = content.trim().slice(0, 2000);
+      if (!text) return null;
+      return { role, content: text } as AiHistoryMessage;
+    })
+    .filter(Boolean) as AiHistoryMessage[];
+  return cleaned.slice(-8);
+}
+
+function getOpenAiReply(data: any): string {
+  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text.trim();
+  if (!Array.isArray(data?.output)) return "";
+  const parts: string[] = [];
+  for (const item of data.output) {
+    if (!Array.isArray(item?.content)) continue;
+    for (const content of item.content) {
+      const text = content?.text;
+      if (typeof text === "string" && text.trim()) parts.push(text.trim());
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+async function callOpenAi(apiKey: string, model: string, history: AiHistoryMessage[], message: string): Promise<string> {
+  const input = [
+    { role: "system", content: [{ type: "input_text", text: AI_SYSTEM_PROMPT }] },
+    ...history.map((m) => ({ role: m.role, content: [{ type: "input_text", text: m.content }] })),
+    { role: "user", content: [{ type: "input_text", text: message }] },
+  ];
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model, input, temperature: 0.7 }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `OpenAI request failed (${response.status})`);
+  }
+  return getOpenAiReply(data);
+}
+
+async function callAnthropic(apiKey: string, model: string, history: AiHistoryMessage[], message: string): Promise<string> {
+  const messages = [
+    ...history.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
+    { role: "user", content: message },
+  ];
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      system: AI_SYSTEM_PROMPT,
+      messages,
+      temperature: 0.7,
+      max_tokens: 700,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `Anthropic request failed (${response.status})`);
+  }
+  const text = (data?.content || [])
+    .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return text;
+}
+
+async function callGemini(apiKey: string, model: string, history: AiHistoryMessage[], message: string): Promise<string> {
+  const contents = [
+    ...history.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    })),
+    { role: "user", parts: [{ text: message }] },
+  ];
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: AI_SYSTEM_PROMPT }] },
+        contents,
+        generationConfig: { temperature: 0.7, maxOutputTokens: 700 },
+      }),
+    }
+  );
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `Gemini request failed (${response.status})`);
+  }
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const text = parts
+    .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return text;
+}
+
+async function callPerplexity(apiKey: string, model: string, history: AiHistoryMessage[], message: string): Promise<string> {
+  const messages = [
+    { role: "system", content: AI_SYSTEM_PROMPT },
+    ...history.map((m) => ({ role: m.role, content: m.content })),
+    { role: "user", content: message },
+  ];
+  const response = await fetch("https://api.perplexity.ai/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model, messages, temperature: 0.7 }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `Perplexity request failed (${response.status})`);
+  }
+  const text = data?.choices?.[0]?.message?.content;
+  return typeof text === "string" ? text.trim() : "";
 }
 
 function startScheduler() {
@@ -93,7 +384,7 @@ function startScheduler() {
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   startScheduler();
 
-  // ── Auth ────────────────────────────────────────────────────────────────────
+  // â”€â”€ Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.post("/api/auth/signup", async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
@@ -118,7 +409,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const valid = await verifyPassword(password, user.password);
       if (!valid) return res.status(401).json({ error: "Invalid email or password" });
       const token = signToken({ userId: user.id, email: user.email });
-      const { password: _, ...safeUser } = user;
+      const safeUser = sanitizeUserForClient(user);
       res.json({ token, user: safeUser });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -127,7 +418,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
-    const { password: _, ...safeUser } = user;
+    const safeUser = sanitizeUserForClient(user);
     res.json(safeUser);
   });
 
@@ -137,15 +428,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!threadsAccessToken) return res.status(400).json({ error: "Access token is required" });
     try {
       const profile = await threads.getProfile(threadsAccessToken);
+      const followersCount = await threads.getFollowersCount(threadsAccessToken, profile.id);
       const user = await storage.updateUserThreadsCredentials(userId, {
         threadsAppId: threadsAppId || undefined,
         threadsAppSecret: threadsAppSecret || undefined,
         threadsAccessToken,
         threadsUsername: profile.username,
         threadsProfilePicUrl: profile.threads_profile_picture_url,
-        threadsFollowerCount: undefined,
+        threadsFollowerCount: followersCount,
       });
-      const { password: _, ...safeUser } = user;
+      const safeUser = sanitizeUserForClient(user);
       res.json({ success: true, user: safeUser, profile });
     } catch (err: any) { res.status(400).json({ error: `Could not connect: ${err.message}` }); }
   });
@@ -157,7 +449,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.updateUserDefaultTopic(userId, defaultTopic || null);
       const user = await storage.getUserById(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
-      const { password: _, ...safeUser } = user;
+      const safeUser = sanitizeUserForClient(user);
       res.json({ success: true, user: safeUser });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -192,15 +484,145 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ success: true });
   });
 
-  // ── Profile & Posts ─────────────────────────────────────────────────────────
+  // â”€â”€ Profile & Posts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get("/api/profile", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
-      res.json(profile);
+      const liveFollowers = await threads.getFollowersCount(user.threadsAccessToken, profile.id);
+      const followersCount = liveFollowers ?? user.threadsFollowerCount ?? undefined;
+
+      if (typeof liveFollowers === "number" && liveFollowers !== user.threadsFollowerCount) {
+        await storage.updateUserThreadsCredentials(userId, { threadsFollowerCount: liveFollowers });
+      }
+
+      res.json({ ...profile, followers_count: followersCount });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/ai/providers", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const providers = getConfiguredAiProviders(user).map((provider) => ({
+      provider: provider.provider,
+      label: provider.label,
+      models: provider.models,
+      defaultModel: provider.defaultModel,
+    }));
+    res.json(providers);
+  });
+
+  app.get("/api/ai/keys", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    res.json({
+      openaiConfigured: !!normalizeApiKey(user.aiOpenaiApiKey),
+      anthropicConfigured: !!normalizeApiKey(user.aiAnthropicApiKey),
+      geminiConfigured: !!normalizeApiKey(user.aiGoogleApiKey),
+      perplexityConfigured: !!normalizeApiKey(user.aiPerplexityApiKey),
+    });
+  });
+
+  app.patch("/api/ai/keys", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const updates: {
+      aiOpenaiApiKey?: string | null;
+      aiAnthropicApiKey?: string | null;
+      aiGoogleApiKey?: string | null;
+      aiPerplexityApiKey?: string | null;
+    } = {};
+
+    const applyKeyUpdate = (payloadKey: string, targetKey: keyof typeof updates) => {
+      if (!(payloadKey in (req.body || {}))) return;
+      const raw = (req.body as any)[payloadKey];
+      if (raw == null || raw === "") {
+        updates[targetKey] = null;
+        return;
+      }
+      const normalized = normalizeApiKey(raw);
+      if (!normalized) {
+        updates[targetKey] = null;
+        return;
+      }
+      updates[targetKey] = normalized;
+    };
+
+    applyKeyUpdate("openaiApiKey", "aiOpenaiApiKey");
+    applyKeyUpdate("anthropicApiKey", "aiAnthropicApiKey");
+    applyKeyUpdate("geminiApiKey", "aiGoogleApiKey");
+    applyKeyUpdate("perplexityApiKey", "aiPerplexityApiKey");
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No key updates provided" });
+    }
+
+    await storage.updateUserAiKeys(userId, updates);
+    const refreshed = await storage.getUserById(userId);
+    if (!refreshed) return res.status(404).json({ error: "User not found" });
+
+    res.json({
+      success: true,
+      keys: {
+        openaiConfigured: !!normalizeApiKey(refreshed.aiOpenaiApiKey),
+        anthropicConfigured: !!normalizeApiKey(refreshed.aiAnthropicApiKey),
+        geminiConfigured: !!normalizeApiKey(refreshed.aiGoogleApiKey),
+        perplexityConfigured: !!normalizeApiKey(refreshed.aiPerplexityApiKey),
+      },
+    });
+  });
+
+  app.post("/api/ai/chat", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const rawProvider = typeof req.body?.provider === "string" ? req.body.provider : "";
+    const provider = (Object.keys(AI_PROVIDER_CATALOG) as AiProvider[]).find((p) => p === rawProvider);
+    const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+    if (!provider) return res.status(400).json({ error: "Invalid provider" });
+    if (!message) return res.status(400).json({ error: "Message is required" });
+    if (message.length > 4000) return res.status(400).json({ error: "Message too long (max 4000 chars)" });
+
+    const catalog = AI_PROVIDER_CATALOG[provider];
+    const configuredKey = getEffectiveProviderApiKey(user, provider);
+    if (!configuredKey) {
+      return res.status(400).json({ error: `${provider} is not configured. Add key in Dashboard or server env.` });
+    }
+
+    const requestedModel = typeof req.body?.model === "string" ? req.body.model : "";
+    const model = catalog.models.includes(requestedModel) ? requestedModel : catalog.defaultModel;
+    const history = sanitizeAiHistory(req.body?.history);
+
+    try {
+      let reply = "";
+      if (provider === "openai") {
+        reply = await callOpenAi(configuredKey, model, history, message);
+      } else if (provider === "anthropic") {
+        reply = await callAnthropic(configuredKey, model, history, message);
+      } else if (provider === "gemini") {
+        reply = await callGemini(configuredKey, model, history, message);
+      } else if (provider === "perplexity") {
+        reply = await callPerplexity(configuredKey, model, history, message);
+      }
+
+      const normalizedReply = reply?.trim();
+      if (!normalizedReply) {
+        return res.status(502).json({ error: "Provider returned empty response" });
+      }
+
+      res.json({ provider, model, reply: normalizedReply });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "AI request failed" });
+    }
   });
 
   app.get("/api/posts/recent", requireAuth, async (req, res) => {
@@ -231,7 +653,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  // ✅ NEW: Repost
+  // âœ… NEW: Repost
   app.post("/api/posts/:postId/repost", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
@@ -243,7 +665,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  // ✅ NEW: Quote post
+  // âœ… NEW: Quote post
   app.post("/api/posts/:postId/quote", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
@@ -260,7 +682,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  // ✅ NEW: Per-post insights
+  // âœ… NEW: Per-post insights
   app.get("/api/posts/:postId/insights", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
@@ -271,7 +693,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  // ✅ NEW: Account-level analytics
+  // âœ… NEW: Account-level analytics
   app.get("/api/analytics", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
@@ -280,18 +702,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const since = normalizeInsightsTimeParam(req.query.since);
       const until = normalizeInsightsTimeParam(req.query.until);
       const postsLimit = normalizePostsLimit(req.query.postsLimit);
+      const summaryOnly = normalizeBooleanFlag(req.query.summaryOnly);
       const profile = await threads.getProfile(user.threadsAccessToken);
-      const [accountInsights, recentPosts] = await Promise.all([
-        threads.getAccountInsights(user.threadsAccessToken, profile.id, {
-          since,
-          until,
-        }),
-        threads.getUserPosts(user.threadsAccessToken, profile.id, postsLimit),
-      ]);
+      const accountInsights = await threads.getAccountInsights(user.threadsAccessToken, profile.id, {
+        since,
+        until,
+      });
+      const recentPosts = summaryOnly ? [] : await threads.getUserPosts(user.threadsAccessToken, profile.id, postsLimit);
+
       const rangeFollowersCount = (since || until)
         ? await threads.getFollowersCountInRange(user.threadsAccessToken, profile.id, { since, until })
         : undefined;
       const followersCount = rangeFollowersCount ?? await threads.getFollowersCount(user.threadsAccessToken, profile.id);
+
+      if (summaryOnly) {
+        return res.json({
+          account: { ...profile, ...accountInsights, followers_count: followersCount },
+          posts: [],
+        });
+      }
 
       // Avoid overwhelming Threads API on very large selections.
       const INSIGHTS_FETCH_CAP = 100;
@@ -319,7 +748,427 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  // ── Scheduling ───────────────────────────────────────────────────────────────
+  // â”€â”€ Scheduling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  app.get("/api/analytics/persona", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+
+    const minFollowersRequired = 100;
+    try {
+      const profile = await threads.getProfile(user.threadsAccessToken);
+      const followersCount = await threads.getFollowersCount(user.threadsAccessToken, profile.id);
+
+      if (typeof followersCount === "number" && followersCount < minFollowersRequired) {
+        return res.json({
+          followersCount,
+          minFollowersRequired,
+          eligible: false,
+          reason: "FOLLOWERS_LT_100",
+          demographics: null,
+          mapping: null,
+        });
+      }
+
+      let countries: threads.FollowerDemographicEntry[] = [];
+      let cities: threads.FollowerDemographicEntry[] = [];
+      let ages: threads.FollowerDemographicEntry[] = [];
+      let genders: threads.FollowerDemographicEntry[] = [];
+      try {
+        [countries, cities, ages, genders] = await Promise.all([
+          threads.getFollowerDemographics(user.threadsAccessToken, profile.id, "country"),
+          threads.getFollowerDemographics(user.threadsAccessToken, profile.id, "city"),
+          threads.getFollowerDemographics(user.threadsAccessToken, profile.id, "age"),
+          threads.getFollowerDemographics(user.threadsAccessToken, profile.id, "gender"),
+        ]);
+      } catch (err: any) {
+        const message = String(err?.message || "");
+        const lower = message.toLowerCase();
+        if (
+          lower.includes("threads_manage_insights") ||
+          lower.includes("missing permissions") ||
+          lower.includes("permission")
+        ) {
+          return res.json({
+            followersCount,
+            minFollowersRequired,
+            eligible: false,
+            reason: "MISSING_PERMISSION",
+            errorMessage: message,
+            demographics: null,
+            mapping: null,
+          });
+        }
+        if (lower.includes("100 followers")) {
+          return res.json({
+            followersCount,
+            minFollowersRequired,
+            eligible: false,
+            reason: "FOLLOWERS_LT_100",
+            errorMessage: message,
+            demographics: null,
+            mapping: null,
+          });
+        }
+        throw err;
+      }
+
+      const demographics = { countries, cities, ages, genders };
+      const hasAnyDemographics = [countries, cities, ages, genders].some((list) => list.length > 0);
+      if (!hasAnyDemographics) {
+        return res.json({
+          followersCount,
+          minFollowersRequired,
+          eligible: true,
+          reason: "NO_DATA",
+          demographics,
+          mapping: null,
+        });
+      }
+
+      const posts = await threads.getUserPosts(user.threadsAccessToken, profile.id, 50);
+      const postsForScoring = posts.slice(0, 40);
+      const scoredPosts = await Promise.all(
+        postsForScoring.map(async (post: any) => {
+          let insights: Awaited<ReturnType<typeof threads.getPostInsights>> | null = null;
+          try {
+            insights = await threads.getPostInsights(user.threadsAccessToken!, post.id);
+          } catch {
+            insights = null;
+          }
+          const views = Number(insights?.views ?? post.views ?? 0);
+          const likes = Number(insights?.likes ?? post.like_count ?? 0);
+          const replies = Number(insights?.replies ?? post.replies_count ?? 0);
+          const reposts = Number(insights?.reposts ?? post.repost_count ?? 0);
+          const quotes = Number(insights?.quotes ?? post.quote_count ?? 0);
+
+          // Weighted with log(views) so likes/replies/reposts still matter.
+          const score = Math.round(
+            Math.log10(Math.max(views, 0) + 1) * 22 +
+            likes * 3.2 +
+            replies * 3.8 +
+            reposts * 4.2 +
+            quotes * 4.2,
+          );
+
+          return {
+            id: String(post.id),
+            text: typeof post.text === "string" ? post.text : "",
+            timestamp: post.timestamp,
+            permalink: typeof post.permalink === "string" ? post.permalink : null,
+            score,
+            metrics: { views, likes, replies, reposts, quotes },
+          };
+        }),
+      );
+
+      scoredPosts.sort((a, b) => b.score - a.score);
+      const topPosts = scoredPosts.slice(0, 5);
+      const recommendedPostIds = topPosts.slice(0, 3).map((post) => post.id);
+
+      const buildSegments = (
+        segmentType: "country" | "city" | "age" | "gender",
+        values: threads.FollowerDemographicEntry[],
+        topN: number,
+      ) => {
+        const total = values.reduce((sum, item) => sum + item.value, 0);
+        return values.slice(0, topN).map((item) => ({
+          segmentType,
+          label: item.label,
+          value: item.value,
+          sharePct: total > 0 ? Math.round((item.value / total) * 1000) / 10 : 0,
+          recommendedPostIds,
+        }));
+      };
+
+      const segments = [
+        ...buildSegments("country", countries, 2),
+        ...buildSegments("city", cities, 2),
+        ...buildSegments("age", ages, 2),
+        ...buildSegments("gender", genders, 2),
+      ];
+
+      res.json({
+        followersCount,
+        minFollowersRequired,
+        eligible: true,
+        demographics,
+        mapping: {
+          mode: "estimated_global",
+          disclaimer:
+            "Threads API does not expose direct per-segment post performance. Recommendations below reuse top overall posts.",
+          segments,
+          posts: topPosts,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message || err) });
+    }
+  });
+  app.get("/api/reply-center", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+
+    try {
+      const days = normalizeReplyCenterDays(req.query.days);
+      const postsLimit = normalizeReplyCenterPostsLimit(req.query.postsLimit);
+      const repliesPerPost = normalizeReplyCenterRepliesPerPost(req.query.repliesPerPost);
+      const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
+
+      const profile = await threads.getProfile(user.threadsAccessToken);
+      const posts = await threads.getUserPosts(user.threadsAccessToken, profile.id, postsLimit);
+      const quota = await threads.getReplyQuotaUsage(user.threadsAccessToken, profile.id);
+
+      const conversations = await Promise.all(
+        posts.map(async (post: any) => {
+          try {
+            const replies = await threads.getConversationReplies(user.threadsAccessToken!, post.id, repliesPerPost);
+            return { post, replies };
+          } catch {
+            try {
+              const replies = await threads.getReplies(user.threadsAccessToken!, post.id);
+              return { post, replies };
+            } catch {
+              return { post, replies: [] };
+            }
+          }
+        }),
+      );
+
+      const normalized = conversations.flatMap(({ post, replies }) =>
+        (replies || [])
+          .map((reply: any) => {
+            const timestampMs = toTimestampMs(reply.timestamp);
+            if (timestampMs == null || timestampMs < sinceMs) return null;
+            const username = typeof reply.username === "string" ? reply.username : "unknown";
+            const repliedToId = typeof reply.replied_to?.id === "string" ? reply.replied_to.id : null;
+            const isReply = reply.is_reply === true || !!repliedToId;
+            if (!isReply) return null;
+            const rootPostId = typeof reply.root_post?.id === "string" ? reply.root_post.id : post.id;
+            const hideRaw = String(reply.hide_status || "").toUpperCase();
+            const hidden = hideRaw === "HIDDEN" || hideRaw === "HIDE";
+            const toxicity = calculateToxicityRisk(reply.text);
+
+            return {
+              id: String(reply.id),
+              text: typeof reply.text === "string" ? reply.text : "",
+              timestamp: reply.timestamp,
+              timestampMs,
+              username,
+              profilePictureUrl: typeof reply.profile_picture_url === "string" ? reply.profile_picture_url : null,
+              permalink: typeof reply.permalink === "string" ? reply.permalink : null,
+              repliedToId,
+              rootPostId,
+              isReplyOwnedByMe: !!reply.is_reply_owned_by_me,
+              hideStatus: hideRaw || "UNKNOWN",
+              isHidden: hidden,
+              toxicityScore: toxicity.score,
+              toxicityLevel: toxicity.level,
+              post: {
+                id: post.id,
+                text: typeof post.text === "string" ? post.text : "",
+                timestamp: post.timestamp,
+                permalink: typeof post.permalink === "string" ? post.permalink : null,
+              },
+            };
+          })
+          .filter(Boolean),
+      ) as Array<{
+        id: string;
+        text: string;
+        timestamp: string;
+        timestampMs: number;
+        username: string;
+        profilePictureUrl: string | null;
+        permalink: string | null;
+        repliedToId: string | null;
+        rootPostId: string;
+        isReplyOwnedByMe: boolean;
+        hideStatus: string;
+        isHidden: boolean;
+        toxicityScore: number;
+        toxicityLevel: "low" | "medium" | "high";
+        post: { id: string; text: string; timestamp: string; permalink: string | null };
+      }>;
+
+      normalized.sort((a, b) => a.timestampMs - b.timestampMs);
+      const itemById = new Map(normalized.map((item) => [item.id, item]));
+      const isReplyToMe = (item: { repliedToId: string | null; post: { id: string } }) => {
+        if (item.repliedToId === item.post.id) return true;
+        const repliedToItem = item.repliedToId ? itemById.get(item.repliedToId) : undefined;
+        return !!repliedToItem?.isReplyOwnedByMe;
+      };
+
+      const incoming = normalized.filter((item) => !item.isReplyOwnedByMe && isReplyToMe(item));
+      const ownerRepliesByParent = new Map<string, number[]>();
+      for (const item of normalized) {
+        if (!item.isReplyOwnedByMe || !item.repliedToId) continue;
+        const bucket = ownerRepliesByParent.get(item.repliedToId) || [];
+        bucket.push(item.timestampMs);
+        ownerRepliesByParent.set(item.repliedToId, bucket);
+      }
+      for (const value of Array.from(ownerRepliesByParent.values())) {
+        value.sort((a, b) => a - b);
+      }
+
+      const authorCounts = new Map<string, number>();
+      for (const item of incoming) {
+        authorCounts.set(item.username, (authorCounts.get(item.username) || 0) + 1);
+      }
+
+      const oneHourMs = 60 * 60 * 1000;
+      const oneDayMs = 24 * oneHourMs;
+      const nowMs = Date.now();
+      let answeredCount = 0;
+      let totalResponseMs = 0;
+      let repliedWithin1HourCount = 0;
+      let unansweredOver1Hour = 0;
+      let unansweredOver24Hours = 0;
+
+      const inbox = normalized
+        .map((item) => {
+          const repliedToItem = item.repliedToId ? itemById.get(item.repliedToId) : undefined;
+          const repliedToUsername = repliedToItem?.username || null;
+          const isDirectReplyToPost = item.repliedToId === item.post.id;
+          const isReplyToMeValue = isDirectReplyToPost || !!repliedToItem?.isReplyOwnedByMe;
+
+          if (item.isReplyOwnedByMe) {
+            return {
+              ...item,
+              repliedToUsername,
+              isDirectReplyToPost,
+              isReplyToMe: true,
+              responseTimeMs: null,
+              firstResponseAt: null,
+              respondedWithin1Hour: false,
+              isUnanswered: false,
+              highFollowerAuthorProxy: false,
+              authorReplyCountInWindow: 0,
+            };
+          }
+
+          const responseCandidates = ownerRepliesByParent.get(item.id) || [];
+          const firstResponseMs = responseCandidates.find((candidate) => candidate >= item.timestampMs) ?? null;
+          const responseTimeMs = firstResponseMs == null ? null : firstResponseMs - item.timestampMs;
+          const respondedWithin1Hour = responseTimeMs != null && responseTimeMs <= oneHourMs;
+          const isUnanswered = firstResponseMs == null;
+          const authorReplyCountInWindow = isReplyToMeValue ? (authorCounts.get(item.username) || 0) : 0;
+          const highFollowerAuthorProxy = authorReplyCountInWindow >= 3;
+
+          if (isReplyToMeValue && isUnanswered && nowMs - item.timestampMs > oneHourMs) unansweredOver1Hour++;
+          if (isReplyToMeValue && isUnanswered && nowMs - item.timestampMs > oneDayMs) unansweredOver24Hours++;
+
+          if (isReplyToMeValue && responseTimeMs != null) {
+            answeredCount++;
+            totalResponseMs += responseTimeMs;
+            if (respondedWithin1Hour) repliedWithin1HourCount++;
+          }
+
+          return {
+            ...item,
+            repliedToUsername,
+            isDirectReplyToPost,
+            isReplyToMe: isReplyToMeValue,
+            responseTimeMs,
+            firstResponseAt: firstResponseMs == null ? null : new Date(firstResponseMs).toISOString(),
+            respondedWithin1Hour,
+            isUnanswered,
+            highFollowerAuthorProxy,
+            authorReplyCountInWindow,
+          };
+        })
+        .sort((a, b) => b.timestampMs - a.timestampMs)
+        .slice(0, 1000);
+
+      const totalIncomingReplies = incoming.length;
+      const unansweredReplies = Math.max(totalIncomingReplies - answeredCount, 0);
+      const avgFirstResponseTimeMs = answeredCount > 0 ? Math.round(totalResponseMs / answeredCount) : null;
+      const repliedWithin1HourPercent =
+        answeredCount > 0 ? Math.round((repliedWithin1HourCount / answeredCount) * 1000) / 10 : 0;
+
+      const postReplyCounts = new Map<string, number>();
+      for (const item of inbox) {
+        postReplyCounts.set(item.post.id, (postReplyCounts.get(item.post.id) || 0) + 1);
+      }
+
+      const topAuthors = Array.from(authorCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([username, count]) => ({ username, count }));
+
+      res.json({
+        meta: {
+          days,
+          postsLimit,
+          repliesPerPost,
+          since: new Date(sinceMs).toISOString(),
+        },
+        quota,
+        sla: {
+          totalIncomingReplies,
+          answeredReplies: answeredCount,
+          unansweredReplies,
+          avgFirstResponseTimeMs,
+          repliedWithin1HourPercent,
+          unansweredOver1Hour,
+          unansweredOver24Hours,
+        },
+        posts: posts.map((post: any) => ({
+          id: post.id,
+          text: typeof post.text === "string" ? post.text : "",
+          timestamp: post.timestamp,
+          permalink: typeof post.permalink === "string" ? post.permalink : null,
+          replyCountInWindow: postReplyCounts.get(post.id) || 0,
+        })),
+        topAuthors,
+        inbox,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/reply-center/:replyId/hide", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+
+    const hideRaw = req.body?.hide;
+    const hide = typeof hideRaw === "boolean" ? hideRaw : normalizeBooleanFlag(String(hideRaw));
+    try {
+      const replyId = String(req.params.replyId || "");
+      if (!replyId) return res.status(400).json({ error: "replyId required" });
+      await threads.setReplyHiddenStatus(user.threadsAccessToken, replyId, hide);
+      res.json({ success: true, hide });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/reply-center/:replyId/reply", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+    const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+    if (!content) return res.status(400).json({ error: "Content required" });
+    if (content.length > 500) return res.status(400).json({ error: "Content exceeds 500 characters" });
+
+    try {
+      const profile = await threads.getProfile(user.threadsAccessToken);
+      const parentReplyId = String(req.params.replyId || "");
+      if (!parentReplyId) return res.status(400).json({ error: "replyId required" });
+      const replyId = await threads.postThread(user.threadsAccessToken, profile.id, content, {
+        replyToId: parentReplyId,
+        topicTag: req.body?.topicTag || user.defaultTopic || undefined,
+      });
+      res.json({ success: true, replyId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/posts/schedule", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     try {
@@ -346,7 +1195,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ success: true });
   });
 
-  // ── Bulk Queues ──────────────────────────────────────────────────────────────
+  // â”€â”€ Bulk Queues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get("/api/bulk-queues", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const queues = await storage.getBulkQueues(userId);
@@ -381,7 +1230,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ success: true });
   });
 
-  // ── Follow-Ups ───────────────────────────────────────────────────────────────
+  // â”€â”€ Follow-Ups â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get("/api/follow-ups", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const followUps = await storage.getFollowUpThreads(userId);
@@ -401,7 +1250,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ success: true });
   });
 
-  // ── Thread Chain ─────────────────────────────────────────────────────────────
+  // â”€â”€ Thread Chain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.post("/api/thread-chain", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
@@ -433,7 +1282,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  // ── Comments ─────────────────────────────────────────────────────────────────
+  // â”€â”€ Comments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get("/api/comments", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
@@ -467,8 +1316,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const profile = await threads.getProfile(user.threadsAccessToken);
       await threads.likePost(user.threadsAccessToken, req.params.mediaId, profile.id);
       res.json({ success: true });
-    } catch (err: any) { res.status(500).json({ error: err.message }); }
+    } catch (err: any) {
+      const message = String(err?.message || "");
+      const lower = message.toLowerCase();
+      if (lower.includes("does not support this operation") || lower.includes("unsupported post request")) {
+        return res.status(400).json({ error: "LIKE_NOT_SUPPORTED", message });
+      }
+      res.status(500).json({ error: message });
+    }
   });
 
   return httpServer;
 }
+
+

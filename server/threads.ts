@@ -24,6 +24,26 @@ export async function getProfile(token: string): Promise<{
   return threadsRequest(token, "/me?fields=id,username,name,threads_profile_picture_url,threads_biography");
 }
 
+export interface ThreadReplyItem {
+  id: string;
+  text?: string;
+  timestamp?: string;
+  username?: string;
+  profile_picture_url?: string;
+  permalink?: string;
+  root_post?: { id?: string };
+  replied_to?: { id?: string };
+  is_reply?: boolean;
+  is_reply_owned_by_me?: boolean;
+  hide_status?: string;
+}
+
+export interface ThreadReplyQuota {
+  replyQuotaUsage: number;
+  quotaTotal: number;
+  quotaDurationSeconds: number;
+}
+
 function extractFollowersCountFromInsights(data: any): number | undefined {
   for (const item of data.data || []) {
     if (item.name !== "followers_count") continue;
@@ -183,6 +203,212 @@ export async function getAccountInsights(token: string, userId: string, options:
   return result;
 }
 
+export type FollowerDemographicsBreakdown = "country" | "city" | "age" | "gender";
+
+export interface FollowerDemographicEntry {
+  label: string;
+  value: number;
+}
+
+const countryDisplayNames =
+  typeof Intl !== "undefined" && typeof Intl.DisplayNames === "function"
+    ? new Intl.DisplayNames(["en"], { type: "region" })
+    : null;
+
+const countryCodeFallbacks: Record<string, string> = {
+  US: "United States",
+  USA: "United States",
+  IN: "India",
+  IND: "India",
+  AE: "United Arab Emirates",
+  UK: "United Kingdom",
+  GBR: "United Kingdom",
+  GB: "United Kingdom",
+  UAE: "United Arab Emirates",
+  CA: "Canada",
+  CAN: "Canada",
+  AU: "Australia",
+  AUS: "Australia",
+  NZ: "New Zealand",
+  NZL: "New Zealand",
+  SG: "Singapore",
+  SGP: "Singapore",
+  DE: "Germany",
+  DEU: "Germany",
+  FR: "France",
+  FRA: "France",
+  IT: "Italy",
+  ITA: "Italy",
+  ES: "Spain",
+  ESP: "Spain",
+  NL: "Netherlands",
+  NLD: "Netherlands",
+  BR: "Brazil",
+  BRA: "Brazil",
+  MX: "Mexico",
+  MEX: "Mexico",
+  JP: "Japan",
+  JPN: "Japan",
+};
+
+function toTitleCase(value: string): string {
+  return value
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function normalizeCountryLabel(value: string): string {
+  const trimmed = value.trim().replace(/[_-]+/g, " ");
+  if (!trimmed) return trimmed;
+  const upper = trimmed.toUpperCase();
+  if (/^[A-Z]{2}$/.test(upper)) {
+    const resolved = countryCodeFallbacks[upper] || countryDisplayNames?.of(upper);
+    return resolved || upper;
+  }
+  if (/^[A-Z]{3}$/.test(upper)) {
+    return countryCodeFallbacks[upper] || upper;
+  }
+  return toTitleCase(trimmed);
+}
+
+function normalizeGenderLabel(value: string): string {
+  const token = value.trim().toUpperCase().replace(/[\s_-]+/g, "");
+  if (!token) return value;
+  if (token === "M" || token === "MALE" || token === "MAN" || token === "MEN") return "Male";
+  if (token === "F" || token === "FEMALE" || token === "WOMAN" || token === "WOMEN") return "Female";
+  if (token === "NB" || token === "NONBINARY" || token === "NONBINARYPERSON") return "Non-binary";
+  if (token === "U" || token === "UNKNOWN" || token === "UNSPECIFIED" || token === "OTHER") return "Unknown";
+  return toTitleCase(value.trim().replace(/[_-]+/g, " "));
+}
+
+function normalizeCityLabel(parts: string[]): string {
+  if (parts.length === 2) {
+    const [aRaw, bRaw] = parts;
+    const a = aRaw.trim();
+    const b = bRaw.trim();
+    const aIsCountryCode = /^[A-Za-z]{2}$/.test(a);
+    const bIsCountryCode = /^[A-Za-z]{2}$/.test(b);
+
+    if (aIsCountryCode && !bIsCountryCode) {
+      return `${toTitleCase(b)}, ${normalizeCountryLabel(a)}`;
+    }
+    if (!aIsCountryCode && bIsCountryCode) {
+      return `${toTitleCase(a)}, ${normalizeCountryLabel(b)}`;
+    }
+  }
+
+  return parts.map((part) => toTitleCase(part.trim().replace(/[_-]+/g, " "))).join(" / ");
+}
+
+function splitCityPartsFromString(value: string): string[] {
+  return value
+    .split(/[|,/]/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function normalizeDemographicLabel(raw: unknown, breakdown: FollowerDemographicsBreakdown): string | null {
+  if (Array.isArray(raw)) {
+    const parts = raw.map((item) => String(item || "").trim()).filter(Boolean);
+    if (!parts.length) return null;
+    if (breakdown === "city") return normalizeCityLabel(parts);
+    if (breakdown === "country") return parts.map((part) => normalizeCountryLabel(part)).join(" / ");
+    if (breakdown === "gender") return parts.map((part) => normalizeGenderLabel(part)).join(" / ");
+    return parts.join(" / ");
+  }
+  if (typeof raw === "string") {
+    const value = raw.trim();
+    if (!value) return null;
+    if (breakdown === "country") return normalizeCountryLabel(value);
+    if (breakdown === "gender") return normalizeGenderLabel(value);
+    if (breakdown === "city") {
+      const splitParts = splitCityPartsFromString(value);
+      if (splitParts.length >= 2 && splitParts.length <= 3) {
+        return normalizeCityLabel(splitParts.slice(0, 2));
+      }
+      return toTitleCase(value.replace(/[_-]+/g, " "));
+    }
+    return value;
+  }
+  return null;
+}
+
+function extractDemographicEntries(
+  data: any,
+  breakdown: FollowerDemographicsBreakdown,
+): FollowerDemographicEntry[] {
+  const totals = new Map<string, number>();
+  const add = (label: string | null, value: unknown) => {
+    if (!label || typeof value !== "number" || !Number.isFinite(value) || value < 0) return;
+    totals.set(label, (totals.get(label) || 0) + value);
+  };
+
+  for (const item of data?.data || []) {
+    const totalValue = item?.total_value;
+
+    // Some Graph responses flatten as key-value maps.
+    if (totalValue && typeof totalValue === "object" && !Array.isArray(totalValue)) {
+      for (const [key, value] of Object.entries(totalValue)) {
+        if (key === "breakdowns") continue;
+        if (typeof value === "number" && Number.isFinite(value)) {
+          add(normalizeDemographicLabel(key, breakdown), value);
+        }
+      }
+    }
+
+    const breakdowns = Array.isArray(totalValue?.breakdowns) ? totalValue.breakdowns : [];
+    for (const breakdown of breakdowns) {
+      const results = Array.isArray(breakdown?.results) ? breakdown.results : [];
+      for (const result of results) {
+        const label =
+          normalizeDemographicLabel(result?.dimension_values, breakdown) ||
+          normalizeDemographicLabel(result?.dimension_value, breakdown) ||
+          normalizeDemographicLabel(result?.label, breakdown) ||
+          normalizeDemographicLabel(result?.name, breakdown) ||
+          normalizeDemographicLabel(result?.key, breakdown);
+        const value =
+          typeof result?.value === "number"
+            ? result.value
+            : typeof result?.total_value?.value === "number"
+              ? result.total_value.value
+              : null;
+        add(label, value);
+      }
+    }
+  }
+
+  return Array.from(totals.entries())
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value);
+}
+
+export async function getFollowerDemographics(
+  token: string,
+  userId: string,
+  breakdown: FollowerDemographicsBreakdown,
+): Promise<FollowerDemographicEntry[]> {
+  const paths = [
+    `/${userId}/threads_insights?metric=follower_demographics&period=lifetime&breakdown=${encodeURIComponent(breakdown)}`,
+    `/me/threads_insights?metric=follower_demographics&period=lifetime&breakdown=${encodeURIComponent(breakdown)}`,
+  ];
+
+  let lastError: Error | null = null;
+  for (const path of paths) {
+    try {
+      const data = await threadsRequest(token, path);
+      return extractDemographicEntries(data, breakdown);
+    } catch (err: any) {
+      lastError = err instanceof Error ? err : new Error(String(err?.message || err));
+    }
+  }
+
+  if (lastError) throw lastError;
+  return [];
+}
+
 // ✅ Per-post insights — views, likes, replies, reposts, quotes, shares, clicks
 export async function getPostInsights(token: string, postId: string): Promise<{
   views: number; likes: number; replies: number;
@@ -242,8 +468,74 @@ export async function getUserPosts(token: string, userId: string, limit = 25): P
 }
 
 export async function getReplies(token: string, postId: string): Promise<any[]> {
-  const data = await threadsRequest(token, `/${postId}/replies?fields=id,text,timestamp,username,profile_picture_url`);
+  const data = await threadsRequest(
+    token,
+    `/${postId}/replies?fields=id,text,timestamp,username,profile_picture_url,permalink,root_post,replied_to,is_reply,is_reply_owned_by_me,hide_status`,
+  );
   return data.data || [];
+}
+
+export async function getConversationReplies(token: string, postId: string, limit = 200): Promise<ThreadReplyItem[]> {
+  const safeLimit = Math.min(Math.max(limit, 1), 500);
+  const collected: ThreadReplyItem[] = [];
+  let after: string | undefined = undefined;
+
+  while (collected.length < safeLimit) {
+    const remaining = safeLimit - collected.length;
+    const pageSize = Math.min(remaining, 100);
+    let path =
+      `/${postId}/conversation?fields=id,text,timestamp,username,profile_picture_url,permalink,root_post,replied_to,is_reply,is_reply_owned_by_me,hide_status` +
+      `&reverse=false&limit=${pageSize}`;
+    if (after) path += `&after=${encodeURIComponent(after)}`;
+
+    const page = await threadsRequest(token, path);
+    const pageData = Array.isArray(page?.data) ? (page.data as ThreadReplyItem[]) : [];
+    if (pageData.length === 0) break;
+
+    collected.push(...pageData);
+    after = page?.paging?.cursors?.after;
+    if (!after && typeof page?.paging?.next === "string") {
+      try {
+        const nextUrl = new URL(page.paging.next);
+        after = nextUrl.searchParams.get("after") || undefined;
+      } catch {
+        after = undefined;
+      }
+    }
+    if (!after) break;
+  }
+
+  return collected.slice(0, safeLimit);
+}
+
+export async function setReplyHiddenStatus(token: string, replyId: string, hide: boolean): Promise<void> {
+  const body = new URLSearchParams({ hide: hide ? "true" : "false" });
+  await threadsRequest(token, `/${replyId}/manage_reply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+}
+
+export async function getReplyQuotaUsage(token: string, userId: string): Promise<ThreadReplyQuota | null> {
+  try {
+    const data = await threadsRequest(
+      token,
+      `/${userId}/threads_publishing_limit?fields=reply_quota_usage,reply_config`,
+    );
+    const first = Array.isArray(data?.data) ? data.data[0] : undefined;
+    if (!first) return null;
+    const usage = typeof first.reply_quota_usage === "number" ? first.reply_quota_usage : 0;
+    const total = typeof first.reply_config?.quota_total === "number" ? first.reply_config.quota_total : 0;
+    const duration = typeof first.reply_config?.quota_duration === "number" ? first.reply_config.quota_duration : 0;
+    return {
+      replyQuotaUsage: usage,
+      quotaTotal: total,
+      quotaDurationSeconds: duration,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function likePost(token: string, mediaId: string, userId: string): Promise<void> {

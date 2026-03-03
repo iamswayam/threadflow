@@ -17,6 +17,7 @@ import Compose from "@/pages/compose";
 import BulkPost from "@/pages/bulk";
 import FollowUp from "@/pages/followup";
 import Comments from "@/pages/comments";
+import ReplyCenter from "@/pages/reply-center";
 import Settings from "@/pages/settings";
 import Login from "@/pages/login";
 import Signup from "@/pages/signup";
@@ -101,6 +102,7 @@ function ProtectedRouter() {
         <Route path="/analytics" component={() => <AnimatedRoute component={Analytics} path="/analytics" />} />
         <Route path="/followup" component={() => <AnimatedRoute component={FollowUp} path="/followup" />} />
         <Route path="/comments" component={() => <AnimatedRoute component={Comments} path="/comments" />} />
+        <Route path="/reply-center" component={() => <AnimatedRoute component={ReplyCenter} path="/reply-center" />} />
         <Route path="/settings" component={() => <AnimatedRoute component={Settings} path="/settings" />} />
         <Route component={NotFound} />
       </Switch>

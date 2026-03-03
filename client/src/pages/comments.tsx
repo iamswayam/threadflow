@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,16 +7,30 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
 import {
-  MessageSquare, RefreshCw, Heart, Reply, Search, AlertCircle, Send, Filter,
+  MessageSquare, RefreshCw, Heart, Reply, Search, AlertCircle, Send, Filter, Smile, Plus,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Link } from "wouter";
 
 const MAX_CHARS = 500;
+const CUSTOM_EMOJI_STORAGE_KEY = "threadflow-custom-emojis";
+const MAX_CUSTOM_EMOJIS = 40;
+type CustomEmoji = { emoji: string; label: string };
+type EmojiItem = { emoji: string; label: string; isCustom: boolean };
+const EMOJI_CATALOG = [
+  "😀", "😁", "😂", "🤣", "😊", "😍", "😘", "😎", "🤔", "😴",
+  "😇", "🤩", "🥳", "😌", "😋", "😜", "🤗", "🤝", "🙏", "💪",
+  "👀", "🔥", "✨", "💯", "✅", "⭐", "🚀", "🎯", "📈", "💡",
+  "👏", "🙌", "👍", "👎", "❤️", "🩵", "💙", "💚", "💛", "🧡",
+  "💜", "🤍", "🖤", "💬", "🗣️", "📣", "🎉", "🌟", "🌍", "🌙",
+  "☀️", "⚡", "🌈", "🧠", "📌", "📝", "📊", "⏰", "🔁", "🔍",
+  "📍", "🎵", "🎬", "📷", "🫶", "🤞", "😅", "🙂", "🙃", "😄",
+];
 
 interface Comment {
   id: string;
@@ -31,6 +45,8 @@ function CommentCard({
   postId,
   onLike,
   onReply,
+  customEmojis,
+  onAddCustomEmoji,
   liking,
   replying,
   isNew,
@@ -39,18 +55,69 @@ function CommentCard({
   postId: string;
   onLike: (id: string) => void;
   onReply: (id: string, text: string) => void;
+  customEmojis: CustomEmoji[];
+  onAddCustomEmoji: (emoji: string, label: string) => boolean;
   liking: boolean;
   replying: boolean;
   isNew: boolean;
 }) {
   const [showReply, setShowReply] = useState(false);
   const [replyText, setReplyText] = useState("");
+  const [openEmoji, setOpenEmoji] = useState(false);
+  const [emojiSearch, setEmojiSearch] = useState("");
+  const [showAddCustomEmoji, setShowAddCustomEmoji] = useState(false);
+  const [customEmojiInput, setCustomEmojiInput] = useState("");
+  const [customEmojiLabel, setCustomEmojiLabel] = useState("");
+  const replyInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const handleReply = () => {
     if (!replyText.trim()) return;
     onReply(comment.id, replyText);
     setReplyText("");
     setShowReply(false);
+    setOpenEmoji(false);
+    setEmojiSearch("");
+    setShowAddCustomEmoji(false);
+    setCustomEmojiInput("");
+    setCustomEmojiLabel("");
+  };
+
+  const emojiItems: EmojiItem[] = [
+    ...EMOJI_CATALOG.map((emoji) => ({ emoji, label: "", isCustom: false })),
+    ...customEmojis.map((item) => ({ emoji: item.emoji, label: item.label, isCustom: true })),
+  ];
+
+  const visibleEmojis = emojiSearch.trim()
+    ? emojiItems.filter((item) => `${item.emoji} ${item.label}`.includes(emojiSearch.trim().toLowerCase()))
+    : emojiItems;
+
+  const handleAddCustomEmoji = () => {
+    const emoji = customEmojiInput.trim();
+    const label = customEmojiLabel.trim().toLowerCase();
+    const added = onAddCustomEmoji(emoji, label);
+    if (added) {
+      setShowAddCustomEmoji(false);
+      setCustomEmojiInput("");
+      setCustomEmojiLabel("");
+    }
+  };
+
+  const insertEmoji = (emoji: string) => {
+    setReplyText((prev) => {
+      const current = prev || "";
+      const el = replyInputRef.current;
+      if (!el) return `${current}${emoji}`.slice(0, MAX_CHARS);
+
+      const start = el.selectionStart ?? current.length;
+      const end = el.selectionEnd ?? current.length;
+      const next = `${current.slice(0, start)}${emoji}${current.slice(end)}`.slice(0, MAX_CHARS);
+      requestAnimationFrame(() => {
+        el.focus();
+        const cursor = Math.min(start + emoji.length, next.length);
+        el.setSelectionRange(cursor, cursor);
+      });
+      return next;
+    });
   };
 
   return (
@@ -108,6 +175,7 @@ function CommentCard({
               placeholder="Write a reply..."
               value={replyText}
               onChange={e => setReplyText(e.target.value)}
+              ref={replyInputRef}
               className="resize-none min-h-[80px]"
               maxLength={MAX_CHARS}
               data-testid={`textarea-reply-${comment.id}`}
@@ -116,7 +184,84 @@ function CommentCard({
               {replyText.length}/{MAX_CHARS}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <Popover
+              open={openEmoji}
+              onOpenChange={(next) => {
+                setOpenEmoji(next);
+                if (!next) {
+                  setEmojiSearch("");
+                  setShowAddCustomEmoji(false);
+                  setCustomEmojiInput("");
+                  setCustomEmojiLabel("");
+                }
+              }}
+            >
+              <PopoverTrigger asChild>
+                <Button size="sm" variant="ghost" data-testid={`button-emoji-${comment.id}`}>
+                  <Smile className="w-3.5 h-3.5 mr-1.5" />
+                  Emoji
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-72 p-2" align="start">
+                <Input
+                  value={emojiSearch}
+                  onChange={(e) => setEmojiSearch(e.target.value)}
+                  placeholder="Search emoji..."
+                  className="h-8 text-xs mb-2"
+                />
+                <div className="max-h-40 overflow-y-auto">
+                  <div className="grid grid-cols-8 gap-1">
+                    {visibleEmojis.map((emojiItem, idx) => (
+                      <button
+                        key={`${emojiItem.emoji}-${emojiItem.isCustom ? "c" : "b"}-${idx}`}
+                        type="button"
+                        className="h-8 w-8 rounded hover:bg-muted text-lg leading-none"
+                        onClick={() => insertEmoji(emojiItem.emoji)}
+                        title={emojiItem.label || "emoji"}
+                      >
+                        {emojiItem.emoji}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="h-8 w-8 rounded border border-border hover:bg-muted flex items-center justify-center"
+                      onClick={() => setShowAddCustomEmoji((prev) => !prev)}
+                      title="Add custom emoji"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                {showAddCustomEmoji && (
+                  <div className="mt-2 space-y-2 border-t border-border pt-2">
+                    <div className="grid grid-cols-[78px_1fr] gap-2">
+                      <Input
+                        value={customEmojiInput}
+                        onChange={(e) => setCustomEmojiInput(e.target.value)}
+                        placeholder="Emoji"
+                        className="h-8 text-xs"
+                      />
+                      <Input
+                        value={customEmojiLabel}
+                        onChange={(e) => setCustomEmojiLabel(e.target.value)}
+                        placeholder="Label (for search)"
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-muted-foreground">
+                        Custom emojis are saved on this browser.
+                      </span>
+                      <Button size="sm" className="h-7 px-2 text-xs" onClick={handleAddCustomEmoji}>
+                        Add
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
+            <div className="flex items-center gap-2">
             <Button
               size="sm"
               onClick={handleReply}
@@ -129,11 +274,20 @@ function CommentCard({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => { setShowReply(false); setReplyText(""); }}
+              onClick={() => {
+                setShowReply(false);
+                setReplyText("");
+                setOpenEmoji(false);
+                setEmojiSearch("");
+                setShowAddCustomEmoji(false);
+                setCustomEmojiInput("");
+                setCustomEmojiLabel("");
+              }}
               data-testid={`button-cancel-reply-${comment.id}`}
             >
               Cancel
             </Button>
+            </div>
           </div>
         </div>
       )}
@@ -150,6 +304,42 @@ export default function Comments() {
   const [commentSearch, setCommentSearch] = useState("");
   const [likingId, setLikingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
+  const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CUSTOM_EMOJI_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const normalized = parsed
+        .map((item) => ({
+          emoji: typeof item?.emoji === "string" ? item.emoji.trim() : "",
+          label: typeof item?.label === "string" ? item.label.trim().toLowerCase() : "",
+        }))
+        .filter((item) => !!item.emoji)
+        .slice(0, MAX_CUSTOM_EMOJIS);
+      setCustomEmojis(normalized);
+    } catch {
+      // Ignore malformed local storage values.
+    }
+  }, []);
+
+  const addCustomEmoji = (emoji: string, label: string): boolean => {
+    if (!emoji) {
+      toast({ title: "Emoji required", description: "Paste an emoji first.", variant: "destructive" });
+      return false;
+    }
+    if (customEmojis.some((item) => item.emoji === emoji)) {
+      toast({ title: "Already added", description: "That emoji is already in your custom list." });
+      return false;
+    }
+    const next = [{ emoji, label }, ...customEmojis].slice(0, MAX_CUSTOM_EMOJIS);
+    setCustomEmojis(next);
+    localStorage.setItem(CUSTOM_EMOJI_STORAGE_KEY, JSON.stringify(next));
+    toast({ title: "Custom emoji added" });
+    return true;
+  };
 
   const hasToken = !!user?.threadsAccessToken;
 
@@ -344,6 +534,8 @@ export default function Comments() {
                 postId={postId}
                 onLike={(id) => likeMutation.mutate(id)}
                 onReply={(id, text) => replyMutation.mutate({ commentId: id, content: text })}
+                customEmojis={customEmojis}
+                onAddCustomEmoji={addCustomEmoji}
                 liking={likingId === comment.id}
                 replying={replyingId === comment.id}
                 isNew={isNew}

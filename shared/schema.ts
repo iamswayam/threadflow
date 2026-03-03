@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+﻿import { sql } from "drizzle-orm";
 import { pgTable, text, varchar, integer, timestamp, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -13,7 +13,11 @@ export const users = pgTable("users", {
   threadsUsername: text("threads_username"),
   threadsProfilePicUrl: text("threads_profile_pic_url"),
   threadsFollowerCount: integer("threads_follower_count"),
-  defaultTopic: text("default_topic"), // ✅ NEW: saved default topic tag
+  aiOpenaiApiKey: text("ai_openai_api_key"),
+  aiAnthropicApiKey: text("ai_anthropic_api_key"),
+  aiGoogleApiKey: text("ai_google_api_key"),
+  aiPerplexityApiKey: text("ai_perplexity_api_key"),
+  defaultTopic: text("default_topic"), // âœ… NEW: saved default topic tag
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
@@ -23,7 +27,7 @@ export const scheduledPosts = pgTable("scheduled_posts", {
   content: text("content").notNull(),
   mediaUrl: text("media_url"),
   mediaType: text("media_type"),
-  topicTag: text("topic_tag"), // ✅ NEW: per-post topic tag
+  topicTag: text("topic_tag"), // âœ… NEW: per-post topic tag
   scheduledAt: timestamp("scheduled_at").notNull(),
   status: text("status").notNull().default("pending"),
   threadsPostId: text("threads_post_id"),
@@ -36,7 +40,7 @@ export const bulkQueues = pgTable("bulk_queues", {
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   delayMinutes: integer("delay_minutes").notNull().default(5),
-  topicTag: text("topic_tag"), // ✅ NEW: topic for whole queue
+  topicTag: text("topic_tag"), // âœ… NEW: topic for whole queue
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
@@ -67,7 +71,7 @@ export const followUpThreads = pgTable("follow_up_threads", {
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
-// ✅ NEW: Thread chain table — series of posts linked as replies
+// âœ… NEW: Thread chain table â€” series of posts linked as replies
 export const threadChains = pgTable("thread_chains", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
@@ -119,3 +123,4 @@ export type InsertFollowUpThread = z.infer<typeof insertFollowUpThreadSchema>;
 export type ThreadChain = typeof threadChains.$inferSelect;
 export type ThreadChainPost = typeof threadChainPosts.$inferSelect;
 export type ThreadChainWithPosts = ThreadChain & { posts: ThreadChainPost[] };
+

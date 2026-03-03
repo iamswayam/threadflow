@@ -3,7 +3,7 @@ import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, SidebarFooter,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, PenSquare, Layers, Timer, MessageSquare, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, PenSquare, Layers, Timer, MessageSquare, Inbox, Settings, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { ThreadFlowLogo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ const navItems = [
   { title: "Bulk Post", url: "/bulk", icon: Layers },
   { title: "Follow-Up", url: "/followup", icon: Timer },
   { title: "Comments", url: "/comments", icon: MessageSquare },
+  { title: "Reply Center", url: "/reply-center", icon: Inbox },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 

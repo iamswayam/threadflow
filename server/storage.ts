@@ -23,6 +23,12 @@ export interface IStorage {
     threadsAppId?: string; threadsAppSecret?: string; threadsAccessToken?: string;
     threadsUsername?: string; threadsProfilePicUrl?: string; threadsFollowerCount?: number;
   }): Promise<User>;
+  updateUserAiKeys(userId: string, data: {
+    aiOpenaiApiKey?: string | null;
+    aiAnthropicApiKey?: string | null;
+    aiGoogleApiKey?: string | null;
+    aiPerplexityApiKey?: string | null;
+  }): Promise<User>;
   updateUserPassword(userId: string, password: string): Promise<void>;
   deleteUser(userId: string): Promise<void>;
 
@@ -62,6 +68,15 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
   async updateUserThreadsCredentials(userId: string, data: any): Promise<User> {
+    const [user] = await db.update(users).set(data).where(eq(users.id, userId)).returning();
+    return user;
+  }
+  async updateUserAiKeys(userId: string, data: {
+    aiOpenaiApiKey?: string | null;
+    aiAnthropicApiKey?: string | null;
+    aiGoogleApiKey?: string | null;
+    aiPerplexityApiKey?: string | null;
+  }): Promise<User> {
     const [user] = await db.update(users).set(data).where(eq(users.id, userId)).returning();
     return user;
   }

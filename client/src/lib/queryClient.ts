@@ -16,6 +16,19 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+async function readJsonOrThrow(res: Response, url: string): Promise<any> {
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    return res.json();
+  }
+
+  const preview = (await res.text()).slice(0, 160).replace(/\s+/g, " ").trim();
+  throw new Error(
+    `Expected JSON from ${url}, got ${contentType || "unknown response type"}. ` +
+    `This usually means API route is missing or server needs restart. ${preview ? `Response: ${preview}` : ""}`,
+  );
+}
+
 export async function apiRequest(
   method: string,
   url: string,
@@ -31,7 +44,7 @@ export async function apiRequest(
   });
 
   await throwIfResNotOk(res);
-  return res.json();
+  return readJsonOrThrow(res, url);
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";
@@ -50,7 +63,7 @@ export const getQueryFn: <T>(options: {
     }
 
     await throwIfResNotOk(res);
-    return await res.json();
+    return await readJsonOrThrow(res, url);
   };
 
 export const queryClient = new QueryClient({
