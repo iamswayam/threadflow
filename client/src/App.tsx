@@ -21,6 +21,8 @@ import Settings from "@/pages/settings";
 import Login from "@/pages/login";
 import Signup from "@/pages/signup";
 import ConnectThreads from "@/pages/connect-threads";
+import ThreadChain from "@/pages/ThreadChain"; // ✅ NEW
+import Analytics from "@/pages/Analytics"; // ✅ NEW
 import { Bell } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -95,6 +97,8 @@ function ProtectedRouter() {
         <Route path="/" component={() => <AnimatedRoute component={Dashboard} path="/" />} />
         <Route path="/compose" component={() => <AnimatedRoute component={Compose} path="/compose" />} />
         <Route path="/bulk" component={() => <AnimatedRoute component={BulkPost} path="/bulk" />} />
+        <Route path="/chain" component={() => <AnimatedRoute component={ThreadChain} path="/chain" />} />
+        <Route path="/analytics" component={() => <AnimatedRoute component={Analytics} path="/analytics" />} />
         <Route path="/followup" component={() => <AnimatedRoute component={FollowUp} path="/followup" />} />
         <Route path="/comments" component={() => <AnimatedRoute component={Comments} path="/comments" />} />
         <Route path="/settings" component={() => <AnimatedRoute component={Settings} path="/settings" />} />

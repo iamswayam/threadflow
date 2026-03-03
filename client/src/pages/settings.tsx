@@ -14,12 +14,25 @@ import { apiRequest } from "@/lib/queryClient";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Settings as SettingsIcon, Key, Link2, Trash2, LogOut,
-  CheckCircle2, ExternalLink, AlertTriangle, Info,
+  CheckCircle2, ExternalLink, AlertTriangle, Info, Hash, X,
 } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+
+// Popular Threads topics with correct spacing format
+const POPULAR_TOPICS = [
+  "Astrology Threads", "Motivation Threads", "Business Threads",
+  "Health Threads", "Fitness Threads", "Tech Threads", "AI Threads",
+  "Crypto Threads", "Spirituality Threads", "Mindset Threads",
+  "Relationship Threads", "Parenting Threads", "Food Threads",
+  "Travel Threads", "Music Threads", "Art Threads", "Writing Threads",
+  "Photography Threads", "Sports Threads", "News Threads",
+  "Finance Threads", "Comedy Threads", "Education Threads",
+  "Daily Life Threads", "Politics Threads",
+];
 
 const passwordSchema = z.object({
   currentPassword: z.string().min(1, "Required"),
@@ -44,6 +57,13 @@ export default function Settings() {
 
   const [connectLoading, setConnectLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
+  const [topicInput, setTopicInput] = useState(user?.defaultTopic || "");
+  const [topicLoading, setTopicLoading] = useState(false);
+  const [showTopicSuggestions, setShowTopicSuggestions] = useState(false);
+
+  const filteredTopics = POPULAR_TOPICS.filter(t =>
+    t.toLowerCase().includes(topicInput.toLowerCase()) && t !== topicInput
+  );
 
   const connectForm = useForm<ConnectForm>({
     resolver: zodResolver(connectSchema),
@@ -82,6 +102,20 @@ export default function Settings() {
       toast({ title: "Threads disconnected" });
     } catch {
       toast({ title: "Failed to disconnect", variant: "destructive" });
+    }
+  };
+
+  const onSaveTopic = async () => {
+    setTopicLoading(true);
+    try {
+      await apiRequest("PATCH", "/api/auth/default-topic", { defaultTopic: topicInput.trim() || null });
+      await refreshUser();
+      toast({ title: "Default topic saved!", description: topicInput.trim() ? `✦ ${topicInput.trim()} will be applied to all posts.` : "Default topic cleared." });
+    } catch (err: any) {
+      toast({ title: "Failed to save topic", description: err.message, variant: "destructive" });
+    } finally {
+      setTopicLoading(false);
+      setShowTopicSuggestions(false);
     }
   };
 
@@ -126,9 +160,7 @@ export default function Settings() {
               <Link2 className="w-4 h-4 text-primary" />
               Threads API Credentials
             </CardTitle>
-            <CardDescription>
-              Update your connection to the Threads API
-            </CardDescription>
+            <CardDescription>Update your connection to the Threads API</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="mb-4 flex items-center gap-2">
@@ -180,6 +212,108 @@ export default function Settings() {
           </CardContent>
         </Card>
 
+        {/* ✅ NEW: Default Topic Card */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Hash className="w-4 h-4 text-primary" />
+              Default Topic Tag
+            </CardTitle>
+            <CardDescription>
+              Auto-applied to all posts. You can override per post in Compose.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {user?.defaultTopic && (
+              <div className="flex items-center gap-2 p-2.5 rounded-md bg-primary/10 border border-primary/20">
+                <span className="text-primary text-sm font-medium">✦ {user.defaultTopic}</span>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="ml-auto h-6 w-6 text-muted-foreground"
+                  onClick={() => { setTopicInput(""); }}
+                  data-testid="button-clear-topic-preview"
+                >
+                  <X className="w-3 h-3" />
+                </Button>
+              </div>
+            )}
+
+            <div className="relative">
+              <div className="flex gap-2">
+                <Input
+                  placeholder="e.g. Astrology Threads"
+                  value={topicInput}
+                  onChange={e => { setTopicInput(e.target.value); setShowTopicSuggestions(true); }}
+                  onFocus={() => setShowTopicSuggestions(true)}
+                  data-testid="input-default-topic"
+                />
+                {topicInput && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => { setTopicInput(""); setShowTopicSuggestions(false); }}
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                )}
+              </div>
+
+              {/* Autocomplete dropdown */}
+              {showTopicSuggestions && filteredTopics.length > 0 && (
+                <div className="absolute top-full left-0 right-0 z-10 mt-1 bg-popover border border-border rounded-md shadow-lg max-h-48 overflow-y-auto">
+                  {filteredTopics.slice(0, 8).map(topic => (
+                    <button
+                      key={topic}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors flex items-center gap-2"
+                      onClick={() => { setTopicInput(topic); setShowTopicSuggestions(false); }}
+                      data-testid={`topic-suggestion-${topic.replace(/\s+/g, "-").toLowerCase()}`}
+                    >
+                      <span className="text-primary text-xs">✦</span>
+                      {topic}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Popular topics: Type to search or pick from suggestions above. The topic shows as <span className="text-primary">✦ Topic Name</span> next to your username on every post.
+            </p>
+
+            <div className="flex gap-2">
+              <Button
+                onClick={onSaveTopic}
+                disabled={topicLoading}
+                data-testid="button-save-topic"
+              >
+                <Hash className="w-4 h-4 mr-2" />
+                {topicLoading ? "Saving..." : "Save Default Topic"}
+              </Button>
+              {user?.defaultTopic && (
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    setTopicInput("");
+                    setTopicLoading(true);
+                    try {
+                      await apiRequest("PATCH", "/api/auth/default-topic", { defaultTopic: null });
+                      await refreshUser();
+                      toast({ title: "Default topic cleared" });
+                    } catch { }
+                    setTopicLoading(false);
+                  }}
+                  data-testid="button-clear-topic"
+                >
+                  Clear Topic
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
@@ -220,46 +354,41 @@ export default function Settings() {
             </Form>
           </CardContent>
         </Card>
-      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <Info className="w-4 h-4 text-primary" />
-            App Info
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center justify-between py-2">
-            <div>
-              <p className="text-sm font-medium text-foreground">Signed in as</p>
-              <p className="text-xs text-muted-foreground">{user?.email}</p>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Info className="w-4 h-4 text-primary" />
+              App Info
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between py-2">
+              <div>
+                <p className="text-sm font-medium text-foreground">Signed in as</p>
+                <p className="text-xs text-muted-foreground">{user?.email}</p>
+              </div>
             </div>
-          </div>
-          <Separator />
-          <div className="flex items-center justify-between py-2">
-            <div>
-              <p className="text-sm font-medium text-foreground">Version</p>
-              <p className="text-xs text-muted-foreground">ThreadFlow v1.0.0</p>
+            <Separator />
+            <div className="flex items-center justify-between py-2">
+              <div>
+                <p className="text-sm font-medium text-foreground">Version</p>
+                <p className="text-xs text-muted-foreground">ThreadFlow v1.0.0</p>
+              </div>
+              <a href="https://github.com/iamswayam/threadflow" target="_blank" rel="noopener noreferrer" className="text-xs text-primary flex items-center gap-1">
+                GitHub <ExternalLink className="w-3 h-3" />
+              </a>
             </div>
-            <a
-              href="https://github.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-primary flex items-center gap-1"
-            >
-              GitHub <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
-          <Separator />
-          <div className="flex items-center justify-between py-2">
-            <div>
-              <p className="text-sm font-medium text-foreground">License</p>
-              <p className="text-xs text-muted-foreground">MIT License — Open Source</p>
+            <Separator />
+            <div className="flex items-center justify-between py-2">
+              <div>
+                <p className="text-sm font-medium text-foreground">License</p>
+                <p className="text-xs text-muted-foreground">MIT License — Open Source</p>
+              </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card className="border-destructive/30">
         <CardHeader>
@@ -286,11 +415,7 @@ export default function Settings() {
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={onDeleteAccount}
-                  className="bg-destructive text-destructive-foreground"
-                  data-testid="button-confirm-delete"
-                >
+                <AlertDialogAction onClick={onDeleteAccount} className="bg-destructive text-destructive-foreground" data-testid="button-confirm-delete">
                   Delete Account
                 </AlertDialogAction>
               </AlertDialogFooter>

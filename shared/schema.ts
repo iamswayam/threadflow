@@ -13,6 +13,7 @@ export const users = pgTable("users", {
   threadsUsername: text("threads_username"),
   threadsProfilePicUrl: text("threads_profile_pic_url"),
   threadsFollowerCount: integer("threads_follower_count"),
+  defaultTopic: text("default_topic"), // ✅ NEW: saved default topic tag
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
@@ -22,6 +23,7 @@ export const scheduledPosts = pgTable("scheduled_posts", {
   content: text("content").notNull(),
   mediaUrl: text("media_url"),
   mediaType: text("media_type"),
+  topicTag: text("topic_tag"), // ✅ NEW: per-post topic tag
   scheduledAt: timestamp("scheduled_at").notNull(),
   status: text("status").notNull().default("pending"),
   threadsPostId: text("threads_post_id"),
@@ -34,6 +36,7 @@ export const bulkQueues = pgTable("bulk_queues", {
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   delayMinutes: integer("delay_minutes").notNull().default(5),
+  topicTag: text("topic_tag"), // ✅ NEW: topic for whole queue
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
@@ -64,6 +67,27 @@ export const followUpThreads = pgTable("follow_up_threads", {
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
+// ✅ NEW: Thread chain table — series of posts linked as replies
+export const threadChains = pgTable("thread_chains", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  topicTag: text("topic_tag"),
+  status: text("status").notNull().default("pending"), // pending | running | completed | failed
+  createdAt: timestamp("created_at").notNull().default(sql`now()`),
+});
+
+export const threadChainPosts = pgTable("thread_chain_posts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  chainId: varchar("chain_id").notNull().references(() => threadChains.id, { onDelete: "cascade" }),
+  content: text("content").notNull(),
+  orderIndex: integer("order_index").notNull(),
+  status: text("status").notNull().default("pending"), // pending | sent | failed
+  threadsPostId: text("threads_post_id"),
+  errorMessage: text("error_message"),
+  publishedAt: timestamp("published_at"),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({ email: true, password: true });
 export const insertScheduledPostSchema = createInsertSchema(scheduledPosts).omit({
   id: true, status: true, threadsPostId: true, errorMessage: true, createdAt: true, userId: true,
@@ -77,6 +101,9 @@ export const insertBulkQueueItemSchema = createInsertSchema(bulkQueueItems).omit
 export const insertFollowUpThreadSchema = createInsertSchema(followUpThreads).omit({
   id: true, status: true, threadsReplyId: true, errorMessage: true, createdAt: true, userId: true,
 });
+export const insertThreadChainSchema = createInsertSchema(threadChains).omit({
+  id: true, status: true, createdAt: true, userId: true,
+});
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -86,6 +113,9 @@ export type BulkQueue = typeof bulkQueues.$inferSelect;
 export type InsertBulkQueue = z.infer<typeof insertBulkQueueSchema>;
 export type BulkQueueItem = typeof bulkQueueItems.$inferSelect;
 export type InsertBulkQueueItem = z.infer<typeof insertBulkQueueItemSchema>;
+export type BulkQueueWithItems = BulkQueue & { items: BulkQueueItem[] };
 export type FollowUpThread = typeof followUpThreads.$inferSelect;
 export type InsertFollowUpThread = z.infer<typeof insertFollowUpThreadSchema>;
-export type BulkQueueWithItems = BulkQueue & { items: BulkQueueItem[] };
+export type ThreadChain = typeof threadChains.$inferSelect;
+export type ThreadChainPost = typeof threadChainPosts.$inferSelect;
+export type ThreadChainWithPosts = ThreadChain & { posts: ThreadChainPost[] };
