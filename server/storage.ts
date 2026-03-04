@@ -158,7 +158,25 @@ export class DatabaseStorage implements IStorage {
     await db.update(bulkQueues).set(updates).where(eq(bulkQueues.id, id));
   }
   async updateBulkQueueItem(id: string, updates: Partial<BulkQueueItem>): Promise<void> {
-    await db.update(bulkQueueItems).set(updates).where(eq(bulkQueueItems.id, id));
+    const allowed: Array<keyof BulkQueueItem> = [
+      "queueId",
+      "content",
+      "mediaUrl",
+      "orderIndex",
+      "status",
+      "scheduledAt",
+      "publishedAt",
+      "threadsPostId",
+      "errorMessage",
+    ];
+    const sanitized: Partial<BulkQueueItem> = {};
+    for (const key of allowed) {
+      if (key in updates) {
+        (sanitized as any)[key] = (updates as any)[key];
+      }
+    }
+    if (Object.keys(sanitized).length === 0) return;
+    await db.update(bulkQueueItems).set(sanitized).where(eq(bulkQueueItems.id, id));
   }
   async deleteBulkQueue(id: string): Promise<void> {
     await db.delete(bulkQueues).where(eq(bulkQueues.id, id));

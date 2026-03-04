@@ -4,6 +4,28 @@ import { storage } from "./storage";
 import * as threads from "./threads";
 import { requireAuth, hashPassword, verifyPassword, signToken } from "./auth";
 
+/*
+ * =====================================================
+ * PERFORMANCE DNA - PROTECTED PUBLISH RULE
+ * =====================================================
+ * Every publish path in this file MUST call
+ * extractDnaSignals() and save the result to scheduledPosts.
+ *
+ * Covered paths (do not remove or skip):
+ *   1. POST /api/posts/publish       (Quick Post + Compose)
+ *   2. startScheduler() scheduled    (auto-publish pending posts)
+ *   3. startScheduler() bulk items   (bulk queue publish)
+ *   4. POST /api/thread-chain        (chain post publish)
+ *
+ * If you add a NEW publish path, you MUST also:
+ *   - Call extractDnaSignals()
+ *   - Create or update a scheduledPost record with DNA signals
+ *   - Set a 10-min setTimeout to fetch and save insights
+ *
+ * Skipping this silently breaks the Performance DNA Engine.
+ * =====================================================
+ */
+
 function getUser(req: Request) { return (req as any).user as { userId: string; email: string }; }
 
 function sanitizeUserForClient(user: any) {
@@ -98,9 +120,9 @@ function extractDnaSignals(content: string, publishedAt: Date, mediaUrl?: string
   const firstLineLower = firstLine.toLowerCase();
 
   const questionWordPattern = /^(who|what|when|where|why|how|is|are|can|could|should|do|does|did|will|would)\b/i;
-  const numberPattern = /^(?:\d+)\b|\b\d+\s+(reasons|ways|things)\b/i;
-  const quotePattern = /^["'“”‘’]/;
-  const commandPattern = /^(stop|never|always|start|don't|dont)\b/i;
+  const numberPattern = /^(?:\d+)\b|\b\d+\s+(reasons|ways|things|tips|rules)\b/i;
+  const quotePattern = /^["']/;
+  const commandPattern = /^(stop|never|always|start|don't|dont|do)\b/i;
 
   let hookStyle: "question" | "number" | "statement" | "quote" | "command" = "statement";
   if (questionWordPattern.test(firstLine) || firstLine.endsWith("?")) {
@@ -114,7 +136,7 @@ function extractDnaSignals(content: string, publishedAt: Date, mediaUrl?: string
   }
 
   const ctaPattern =
-    /\b(comment|share|follow|save|tag someone|let me know|what do you think|drop a|agree|thoughts)\b/i;
+    /\b(comment|share|follow|save|tag someone|let me know|what do you|drop a|agree|thoughts|your take)\b/i;
   const hasCta = trimmedContent.endsWith("?") || ctaPattern.test(normalizedContent);
   const hasMedia = !!(mediaUrl && String(mediaUrl).trim());
 
@@ -149,6 +171,16 @@ async function refreshScheduledPostInsights(
     insightsQuotes: toNullableInt(insights?.quotes),
     insightsFetchedAt: new Date(),
   });
+}
+
+function scheduleInsightsRefresh(accessToken: string, scheduledPostId: string, threadsPostId: string) {
+  setTimeout(async () => {
+    try {
+      await refreshScheduledPostInsights(accessToken, scheduledPostId, threadsPostId);
+    } catch {
+      // Background insights refresh is best-effort only.
+    }
+  }, 10 * 60 * 1000);
 }
 
 function toTimestampMs(value: unknown): number | null {
@@ -430,6 +462,7 @@ function startScheduler() {
             threadsPostId: threadId,
             ...dnaSignals,
           });
+          scheduleInsightsRefresh(post.userToken, post.id, threadId);
         } catch (err: any) {
           await storage.updateScheduledPost(post.id, { status: "failed", errorMessage: err.message });
         }
@@ -452,7 +485,25 @@ function startScheduler() {
             imageUrl: item.mediaUrl || undefined,
             topicTag: (item as any).topicTag || user?.defaultTopic || undefined,
           });
-          await storage.updateBulkQueueItem(item.id, { status: "sent", publishedAt: new Date(), threadsPostId: threadId });
+          const publishedAt = new Date();
+          const dnaSignals = extractDnaSignals(item.content, publishedAt, item.mediaUrl || null);
+          await storage.updateBulkQueueItem(item.id, {
+            status: "sent",
+            publishedAt,
+            threadsPostId: threadId,
+            ...(dnaSignals as any),
+          } as any);
+          const publishedPost = await storage.createScheduledPost(item.queue.userId, {
+            content: item.content,
+            scheduledAt: publishedAt,
+            topicTag: (item as any).topicTag || item.queue.topicTag || null,
+            mediaUrl: item.mediaUrl || null,
+            mediaType: "TEXT",
+            status: "published",
+            threadsPostId: threadId,
+            ...dnaSignals,
+          } as any);
+          scheduleInsightsRefresh(item.userToken, publishedPost.id, threadId);
         } catch (err: any) {
           await storage.updateBulkQueueItem(item.id, { status: "failed", errorMessage: err.message });
         }
@@ -781,13 +832,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         status: "published",
         threadsPostId: postId,
       } as any);
-      setTimeout(async () => {
-        try {
-          await refreshScheduledPostInsights(user.threadsAccessToken!, createdPost.id, postId);
-        } catch {
-          // Background insights refresh is best-effort only.
-        }
-      }, 10 * 60 * 1000);
+      scheduleInsightsRefresh(user.threadsAccessToken, createdPost.id, postId);
       res.json({ success: true, postId, appTag });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -1598,6 +1643,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           topicTagSkippedCount++;
         }
         if (applyTopicTag) topicTagAppliedCount++;
+        const publishedAt = new Date();
+        const dnaSignals = extractDnaSignals(text, publishedAt, null);
+        const publishedPost = await storage.createScheduledPost(userId, {
+          content: text,
+          scheduledAt: publishedAt,
+          topicTag: applyTopicTag ? resolvedTopic || null : null,
+          mediaUrl: null,
+          mediaType: "TEXT",
+          status: "published",
+          threadsPostId: postId,
+          ...dnaSignals,
+        } as any);
+        scheduleInsightsRefresh(user.threadsAccessToken, publishedPost.id, postId);
         publishedIds.push(postId);
         previousPostId = postId;
         if (i < normalizedPosts.length - 1) await new Promise(r => setTimeout(r, 1500));
