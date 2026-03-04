@@ -1260,6 +1260,89 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const posts = await storage.getPostsByAppTag(userId, tag || null);
     res.json(posts);
   });
+  app.get("/api/posts/tag-insights", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+
+    const tag = req.query.tag as string | undefined;
+    if (!tag) return res.status(400).json({ error: "tag param required" });
+
+    try {
+      const posts = await storage.getPostsByAppTag(userId, tag);
+      const postsWithThreadsId = posts.filter((p) => p.threadsPostId);
+
+      const insightResults = await Promise.all(
+        postsWithThreadsId.map(async (post) => {
+          try {
+            const insights = await threads.getPostInsights(
+              user.threadsAccessToken!,
+              post.threadsPostId!,
+            );
+            return { post, insights };
+          } catch {
+            return { post, insights: null };
+          }
+        }),
+      );
+
+      const totals = insightResults.reduce(
+        (acc, { insights }) => {
+          if (!insights) return acc;
+          return {
+            views: acc.views + (Number(insights.views) || 0),
+            likes: acc.likes + (Number(insights.likes) || 0),
+            replies: acc.replies + (Number(insights.replies) || 0),
+            reposts: acc.reposts + (Number(insights.reposts) || 0),
+            quotes: acc.quotes + (Number(insights.quotes) || 0),
+          };
+        },
+        { views: 0, likes: 0, replies: 0, reposts: 0, quotes: 0 },
+      );
+
+      const postsWithInsights = posts.map((post) => {
+        const match = insightResults.find((r) => r.post.id === post.id);
+        return { ...post, insights: match?.insights || null };
+      });
+
+      const bestPost =
+        postsWithInsights
+          .filter((p) => p.insights?.views)
+          .sort(
+            (a, b) =>
+              (Number(b.insights?.views) || 0) - (Number(a.insights?.views) || 0),
+          )[0] || null;
+
+      const postsWithData = insightResults.filter((r) => r.insights).length;
+      const averages =
+        postsWithData > 0
+          ? {
+              views: Math.round(totals.views / postsWithData),
+              likes: Math.round(totals.likes / postsWithData),
+              replies: Math.round(totals.replies / postsWithData),
+            }
+          : null;
+
+      res.json({
+        tag,
+        totalPosts: posts.length,
+        postsWithInsights: postsWithData,
+        totals,
+        averages,
+        bestPost: bestPost
+          ? {
+              content: bestPost.content,
+              threadsPostId: bestPost.threadsPostId,
+              views: bestPost.insights?.views,
+              likes: bestPost.insights?.likes,
+            }
+          : null,
+        posts: postsWithInsights,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // â”€â”€ Bulk Queues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get("/api/bulk-queues", requireAuth, async (req, res) => {
@@ -1444,5 +1527,3 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   return httpServer;
 }
-
-
