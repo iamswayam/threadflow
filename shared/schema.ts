@@ -17,7 +17,7 @@ export const users = pgTable("users", {
   aiAnthropicApiKey: text("ai_anthropic_api_key"),
   aiGoogleApiKey: text("ai_google_api_key"),
   aiPerplexityApiKey: text("ai_perplexity_api_key"),
-  defaultTopic: text("default_topic"), // âœ… NEW: saved default topic tag
+  defaultTopic: text("default_topic"), // NEW: saved default topic tag
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
@@ -37,7 +37,8 @@ export const scheduledPosts = pgTable("scheduled_posts", {
   content: text("content").notNull(),
   mediaUrl: text("media_url"),
   mediaType: text("media_type"),
-  topicTag: text("topic_tag"), // âœ… NEW: per-post topic tag
+  topicTag: text("topic_tag"),
+  appTag: text("app_tag"),
   scheduledAt: timestamp("scheduled_at").notNull(),
   status: text("status").notNull().default("pending"),
   threadsPostId: text("threads_post_id"),
@@ -50,7 +51,7 @@ export const bulkQueues = pgTable("bulk_queues", {
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   delayMinutes: integer("delay_minutes").notNull().default(5),
-  topicTag: text("topic_tag"), // âœ… NEW: topic for whole queue
+  topicTag: text("topic_tag"),
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
@@ -81,7 +82,7 @@ export const followUpThreads = pgTable("follow_up_threads", {
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
-// âœ… NEW: Thread chain table â€” series of posts linked as replies
+// NEW: Thread chain table — series of posts linked as replies
 export const threadChains = pgTable("thread_chains", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
@@ -139,4 +140,3 @@ export type ThreadChainPost = typeof threadChainPosts.$inferSelect;
 export type ThreadChainWithPosts = ThreadChain & { posts: ThreadChainPost[] };
 export type PostMetadata = typeof postMetadata.$inferSelect;
 export type InsertPostMetadata = z.infer<typeof insertPostMetadataSchema>;
-

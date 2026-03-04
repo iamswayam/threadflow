@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { eq, desc, and, lte, inArray } from "drizzle-orm";
+import { eq, desc, and, lte, inArray, isNotNull } from "drizzle-orm";
 import {
   users, scheduledPosts, bulkQueues, bulkQueueItems, followUpThreads, postMetadata,
   type User, type InsertUser,
@@ -61,6 +61,9 @@ export interface IStorage {
     metadata: { threadsPostId: string; appTag?: string | null; topicTag?: string | null; contentPreview?: string | null },
   ): Promise<PostMetadata>;
   getPostMetadataByThreadsIds(userId: string, threadsPostIds: string[]): Promise<PostMetadata[]>;
+
+  getUserAppTags(userId: string): Promise<string[]>;
+  getPostsByAppTag(userId: string, appTag: string | null): Promise<ScheduledPost[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -225,6 +228,36 @@ export class DatabaseStorage implements IStorage {
     return db.select()
       .from(postMetadata)
       .where(and(eq(postMetadata.userId, userId), inArray(postMetadata.threadsPostId, threadsPostIds)));
+  }
+
+  async getUserAppTags(userId: string): Promise<string[]> {
+    const rows = await db
+      .selectDistinct({ appTag: scheduledPosts.appTag })
+      .from(scheduledPosts)
+      .where(
+        and(
+          eq(scheduledPosts.userId, userId),
+          isNotNull(scheduledPosts.appTag)
+        )
+      );
+    return rows.map(r => r.appTag!).filter(Boolean);
+  }
+
+  async getPostsByAppTag(
+    userId: string,
+    appTag: string | null
+  ): Promise<ScheduledPost[]> {
+    if (appTag) {
+      return db.select().from(scheduledPosts)
+        .where(and(
+          eq(scheduledPosts.userId, userId),
+          eq(scheduledPosts.appTag, appTag)
+        ))
+        .orderBy(desc(scheduledPosts.createdAt));
+    }
+    return db.select().from(scheduledPosts)
+      .where(eq(scheduledPosts.userId, userId))
+      .orderBy(desc(scheduledPosts.createdAt));
   }
 }
 

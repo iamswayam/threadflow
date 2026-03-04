@@ -54,6 +54,7 @@ export default function Compose() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [topicInput, setTopicInput] = useState(user?.defaultTopic || "");
   const [showTopicSuggestions, setShowTopicSuggestions] = useState(false);
+  const [appTag, setAppTag] = useState("");
 
   const filteredTopics = POPULAR_TOPICS.filter(t =>
     t.toLowerCase().includes(topicInput.toLowerCase()) && t !== topicInput
@@ -78,6 +79,7 @@ export default function Compose() {
       toast({ title: "Post published!", description: topicInput ? `Tagged as ✦ ${topicInput}` : "Your thread is now live on Threads." });
       form.reset();
       setTopicInput(user?.defaultTopic || "");
+      setAppTag("");
     },
     onError: (err: any) => {
       const msg = err.message?.includes("NO_TOKEN")
@@ -94,6 +96,7 @@ export default function Compose() {
       form.reset();
       setShowSchedule(false);
       setTopicInput(user?.defaultTopic || "");
+      setAppTag("");
       queryClient.invalidateQueries({ queryKey: ["/api/posts/scheduled"] });
     },
     onError: (err: any) => {
@@ -115,6 +118,7 @@ export default function Compose() {
       mediaUrl: data.mediaUrl || undefined,
       mediaType: data.mediaType,
       topicTag: topicInput.trim() || undefined,
+      appTag: appTag.trim() || undefined,
     });
   };
 
@@ -128,6 +132,7 @@ export default function Compose() {
       mediaUrl: data.mediaUrl || null,
       mediaType: data.mediaType,
       topicTag: topicInput.trim() || undefined,
+      appTag: appTag.trim() || undefined,
       scheduledAt: new Date(data.scheduledAt).toISOString(),
     });
   };
@@ -222,6 +227,21 @@ export default function Compose() {
                     {topicInput && (
                       <p className="text-xs text-muted-foreground">Post will show: <span className="text-primary">✦ {topicInput}</span></p>
                     )}
+                  </div>
+
+                  {/* App Tag - personal tag (not posted to Threads) */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/30">
+                      <span className="text-xs font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP</span>
+                      <Input
+                        className="h-8 border-0 bg-transparent px-0 text-sm focus-visible:ring-0"
+                        placeholder="Personal tag (e.g. saturn, nakshatra, transit)"
+                        value={appTag}
+                        onChange={(e) => setAppTag(e.target.value.slice(0, 60))}
+                        disabled={!user?.threadsAccessToken}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">Saved in ThreadFlow only — not posted to Threads</p>
                   </div>
 
                   <div className="space-y-3">

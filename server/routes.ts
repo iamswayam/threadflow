@@ -668,8 +668,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN", message: "Connect your Threads account first" });
-    const { content, mediaUrl, mediaType, topicTag } = req.body;
-    const appTag = normalizeAppTag(req.body?.appTag);
+    const { content, mediaUrl, mediaType, topicTag, appTag } = req.body;
     if (!content) return res.status(400).json({ error: "Content is required" });
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
@@ -685,6 +684,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         topicTag: resolvedTopicTag || null,
         contentPreview: typeof content === "string" ? content.slice(0, 280) : null,
       });
+      // Save to scheduledPosts for tracking
+      await storage.createScheduledPost(userId, {
+        content,
+        scheduledAt: new Date(),
+        topicTag: resolvedTopicTag || null,
+        mediaUrl: mediaUrl || null,
+        mediaType: mediaType || "TEXT",
+        appTag: appTag || null,
+        status: "published",
+        threadsPostId: postId,
+      } as any);
       res.json({ success: true, postId, appTag: appTag || null });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -1234,6 +1244,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     await storage.deleteScheduledPost(id);
     res.json({ success: true });
+  });
+
+  // Get all unique tags for current user
+  app.get("/api/posts/tags", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const tags = await storage.getUserAppTags(userId);
+    res.json(tags);
+  });
+
+  // Get posts filtered by tag (optional ?tag= query param)
+  app.get("/api/posts/my-content", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const tag = req.query.tag as string | undefined;
+    const posts = await storage.getPostsByAppTag(userId, tag || null);
+    res.json(posts);
   });
 
   // â”€â”€ Bulk Queues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

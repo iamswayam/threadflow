@@ -238,7 +238,6 @@ function QuickPost({
 }) {
   const [content, setContent] = useState("");
   const [topicInput, setTopicInput] = useState("");
-  const [appTagInput, setAppTagInput] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const { toast } = useToast();
   const { user } = useAuth();
@@ -263,11 +262,9 @@ function QuickPost({
     onSuccess: () => {
       const details: string[] = [];
       if (topicInput) details.push(`Topic ${topicInput}`);
-      if (appTagInput) details.push(`App tag #${appTagInput}`);
       toast({ title: "Posted!", description: details.length ? details.join(" | ") : "Thread published!" });
       setContent("");
       setTopicInput(user?.defaultTopic || "");
-      setAppTagInput("");
     },
     onError: (err: any) => {
       const msg = err.message?.includes(":") ? err.message.split(":").slice(1).join(":").trim() : err.message;
@@ -324,19 +321,6 @@ function QuickPost({
 
         </div>
 
-        {/* Internal app tag (saved in ThreadFlow only) */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/20">
-          <span className="text-xs font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP</span>
-          <Input
-            className="h-8 border-0 bg-transparent px-0 text-sm focus-visible:ring-0"
-            placeholder="Add internal tag (not posted to Threads)"
-            value={appTagInput}
-            onChange={(e) => setAppTagInput(e.target.value.slice(0, 60))}
-            disabled={!user?.threadsAccessToken}
-            data-testid="input-quick-post-app-tag"
-          />
-        </div>
-
         {/* Post textarea */}
         <Textarea
           placeholder={user?.threadsAccessToken ? "What's on your mind?" : "Connect your Threads account to post..."}
@@ -358,7 +342,6 @@ function QuickPost({
             onClick={() => publish({
               content: content.trim(),
               topicTag: topicInput.trim() || undefined,
-              appTag: appTagInput.trim() || undefined,
             })}
             data-testid="button-quick-post"
           >
@@ -734,7 +717,6 @@ export default function Dashboard() {
   ];
 
   const quickActions = [
-    { label: "Compose Post", href: "/compose", icon: PenSquare, desc: "Write and schedule a post" },
     { label: "Thread Chain", href: "/chain", icon: Link2, desc: "Post a series instantly" },
     { label: "Bulk Post", href: "/bulk", icon: Layers, desc: "Multiple posts in sequence" },
     { label: "Analytics", href: "/analytics", icon: BarChart2, desc: "View performance insights" },
@@ -790,8 +772,12 @@ export default function Dashboard() {
             <CardDescription>Jump to any feature</CardDescription>
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-3">
-            {quickActions.map((action) => (
-              <Link key={action.href} href={action.href}>
+            {quickActions.map((action, index) => (
+              <Link 
+                key={action.href} 
+                href={action.href}
+                className={index === quickActions.length - 1 && quickActions.length % 2 !== 0 ? "col-span-2" : ""}
+              >
                 <div className="flex flex-col gap-2 p-3 rounded-md border border-border hover-elevate cursor-pointer group">
                   <div className="flex items-center justify-center w-8 h-8 rounded-md bg-primary/10 group-hover:bg-primary/20 transition-colors">
                     <action.icon className="w-4 h-4 text-primary" />
