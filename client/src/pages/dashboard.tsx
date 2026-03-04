@@ -179,9 +179,9 @@ function ProfileCard() {
         <div className="flex-1 min-w-0">
           <p className="font-bold text-foreground">
             {displayProfile.name || displayProfile.username}
-            <span className="text-sm text-muted-foreground font-medium ml-1">@{displayProfile.username}</span>
+            <span className="text-sm font-medium ml-1 text-username">@{displayProfile.username}</span>
           </p>
-          <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
+          <div className="flex items-center gap-1 text-xs mt-0.5 text-usernameaccent">
             <Users className="w-3.5 h-3.5" />
             <span>
               {typeof displayProfile.followers_count === "number"
@@ -220,6 +220,7 @@ function QuickPost({
 }) {
   const [content, setContent] = useState("");
   const [topicInput, setTopicInput] = useState("");
+  const [appTagInput, setAppTagInput] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const { toast } = useToast();
   const { user } = useAuth();
@@ -239,12 +240,16 @@ function QuickPost({
   );
 
   const { mutate: publish, isPending } = useMutation({
-    mutationFn: (data: { content: string; topicTag?: string }) =>
+    mutationFn: (data: { content: string; topicTag?: string; appTag?: string }) =>
       apiRequest("POST", "/api/posts/publish", data),
     onSuccess: () => {
-      toast({ title: "Posted!", description: topicInput ? `Tagged ✦ ${topicInput}` : "Thread published!" });
+      const details: string[] = [];
+      if (topicInput) details.push(`Topic ${topicInput}`);
+      if (appTagInput) details.push(`App tag #${appTagInput}`);
+      toast({ title: "Posted!", description: details.length ? details.join(" | ") : "Thread published!" });
       setContent("");
       setTopicInput(user?.defaultTopic || "");
+      setAppTagInput("");
     },
     onError: (err: any) => {
       const msg = err.message?.includes(":") ? err.message.split(":").slice(1).join(":").trim() : err.message;
@@ -301,6 +306,19 @@ function QuickPost({
 
         </div>
 
+        {/* Internal app tag (saved in ThreadFlow only) */}
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/20">
+          <span className="text-xs font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP</span>
+          <Input
+            className="h-8 border-0 bg-transparent px-0 text-sm focus-visible:ring-0"
+            placeholder="Add internal tag (not posted to Threads)"
+            value={appTagInput}
+            onChange={(e) => setAppTagInput(e.target.value.slice(0, 60))}
+            disabled={!user?.threadsAccessToken}
+            data-testid="input-quick-post-app-tag"
+          />
+        </div>
+
         {/* Post textarea */}
         <Textarea
           placeholder={user?.threadsAccessToken ? "What's on your mind?" : "Connect your Threads account to post..."}
@@ -319,7 +337,11 @@ function QuickPost({
           <Button
             size="sm"
             disabled={!content.trim() || isPending || !user?.threadsAccessToken}
-            onClick={() => publish({ content: content.trim(), topicTag: topicInput.trim() || undefined })}
+            onClick={() => publish({
+              content: content.trim(),
+              topicTag: topicInput.trim() || undefined,
+              appTag: appTagInput.trim() || undefined,
+            })}
             data-testid="button-quick-post"
           >
             <Send className="w-3.5 h-3.5 mr-1.5" />
@@ -594,6 +616,13 @@ function RecentPosts() {
                       {post.like_count > 0 && <span className="ml-2">❤️ {post.like_count}</span>}
                       {post.replies_count > 0 && <span className="ml-2">💬 {post.replies_count}</span>}
                     </p>
+                    {post.appTag && (
+                      <p className="text-[11px] mt-1">
+                        <span className="inline-flex items-center rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary">
+                          APP TAG #{post.appTag}
+                        </span>
+                      </p>
+                    )}
                   </div>
                   {/* Repost + Quote buttons appear on hover */}
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">

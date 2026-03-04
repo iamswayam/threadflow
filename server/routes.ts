@@ -66,6 +66,16 @@ function normalizeReplyCenterRepliesPerPost(value: unknown): number {
   return Math.min(Math.max(Math.floor(raw), 25), 200);
 }
 
+function normalizeAppTag(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > 60) {
+    throw new Error("App tag must be 60 characters or less");
+  }
+  return trimmed;
+}
+
 function toTimestampMs(value: unknown): number | null {
   if (typeof value !== "string") return null;
   const ms = Date.parse(value);
@@ -351,7 +361,11 @@ function startScheduler() {
           continue;
         }
         try {
-          const user = await storage.getUserById(item.userId!);
+          if (!item.queue.userId) {
+            await storage.updateBulkQueueItem(item.id, { status: "failed", errorMessage: "No user ID in queue" });
+            continue;
+          }
+          const user = await storage.getUserById(item.queue.userId);
           const profile = await threads.getProfile(item.userToken);
           const threadId = await threads.postThread(item.userToken, profile.id, item.content, {
             imageUrl: item.mediaUrl || undefined,
@@ -632,7 +646,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
       const posts = await threads.getUserPosts(user.threadsAccessToken, profile.id);
-      res.json(posts);
+      const postIds = posts
+        .map((post: any) => (typeof post?.id === "string" ? post.id : ""))
+        .filter(Boolean);
+      const metadata = await storage.getPostMetadataByThreadsIds(userId, postIds);
+      const metadataById = new Map(metadata.map((item) => [item.threadsPostId, item]));
+
+      const mergedPosts = posts.map((post: any) => {
+        const meta = typeof post?.id === "string" ? metadataById.get(post.id) : undefined;
+        return {
+          ...post,
+          appTag: meta?.appTag || null,
+          internalTopicTag: meta?.topicTag || null,
+        };
+      });
+      res.json(mergedPosts);
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -641,15 +669,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN", message: "Connect your Threads account first" });
     const { content, mediaUrl, mediaType, topicTag } = req.body;
+    const appTag = normalizeAppTag(req.body?.appTag);
     if (!content) return res.status(400).json({ error: "Content is required" });
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
+      const resolvedTopicTag = topicTag || user.defaultTopic || undefined;
       const postId = await threads.postThread(user.threadsAccessToken, profile.id, content, {
         imageUrl: mediaType === "IMAGE" ? mediaUrl : undefined,
         videoUrl: mediaType === "VIDEO" ? mediaUrl : undefined,
-        topicTag: topicTag || user.defaultTopic || undefined,
+        topicTag: resolvedTopicTag,
       });
-      res.json({ success: true, postId });
+      await storage.upsertPostMetadata(userId, {
+        threadsPostId: postId,
+        appTag: appTag || null,
+        topicTag: resolvedTopicTag || null,
+        contentPreview: typeof content === "string" ? content.slice(0, 280) : null,
+      });
+      res.json({ success: true, postId, appTag: appTag || null });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -658,9 +694,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+    const postId = Array.isArray(req.params.postId) ? req.params.postId[0] : req.params.postId;
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
-      const repostId = await threads.repostThread(user.threadsAccessToken, profile.id, req.params.postId);
+      const repostId = await threads.repostThread(user.threadsAccessToken, profile.id, postId);
       res.json({ success: true, repostId });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -672,10 +709,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
     const { content, topicTag } = req.body;
     if (!content) return res.status(400).json({ error: "Content is required" });
+    const postId = Array.isArray(req.params.postId) ? req.params.postId[0] : req.params.postId;
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
       const quoteId = await threads.quoteThread(
-        user.threadsAccessToken, profile.id, content, req.params.postId,
+        user.threadsAccessToken, profile.id, content, postId,
         topicTag || user.defaultTopic || undefined
       );
       res.json({ success: true, quoteId });
@@ -688,7 +726,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
     try {
-      const insights = await threads.getPostInsights(user.threadsAccessToken, req.params.postId);
+      const postId = Array.isArray(req.params.postId) ? req.params.postId[0] : req.params.postId;
+      const insights = await threads.getPostInsights(user.threadsAccessToken, postId);
       res.json(insights);
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -1185,13 +1224,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.patch("/api/posts/scheduled/:id", requireAuth, async (req, res) => {
     try {
-      const post = await storage.updateScheduledPost(req.params.id, req.body);
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const post = await storage.updateScheduledPost(id, req.body);
       res.json(post);
     } catch (err: any) { res.status(400).json({ error: err.message }); }
   });
 
   app.delete("/api/posts/scheduled/:id", requireAuth, async (req, res) => {
-    await storage.deleteScheduledPost(req.params.id);
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    await storage.deleteScheduledPost(id);
     res.json({ success: true });
   });
 
@@ -1221,12 +1262,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.patch("/api/bulk-queues/:id", requireAuth, async (req, res) => {
-    await storage.updateBulkQueue(req.params.id, req.body);
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    await storage.updateBulkQueue(id, req.body);
     res.json({ success: true });
   });
 
   app.delete("/api/bulk-queues/:id", requireAuth, async (req, res) => {
-    await storage.deleteBulkQueue(req.params.id);
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    await storage.deleteBulkQueue(id);
     res.json({ success: true });
   });
 
@@ -1246,7 +1289,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/follow-ups/:id", requireAuth, async (req, res) => {
-    await storage.deleteFollowUpThread(req.params.id);
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    await storage.deleteFollowUpThread(id);
     res.json({ success: true });
   });
 
@@ -1260,25 +1304,70 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: "Posts array is required" });
     if (posts.length > 20) return res.status(400).json({ error: "Max 20 posts per chain" });
 
+    const normalizedPosts = posts
+      .map((item: any) => {
+        if (typeof item === "string") {
+          return { content: item, useTopicTag: true };
+        }
+        if (item && typeof item === "object" && typeof item.content === "string") {
+          return { content: item.content, useTopicTag: item.useTopicTag !== false };
+        }
+        return null;
+      })
+      .filter(Boolean) as Array<{ content: string; useTopicTag: boolean }>;
+
+    if (normalizedPosts.length === 0) {
+      return res.status(400).json({ error: "Posts array is required" });
+    }
+
     const resolvedTopic = topicTag || user.defaultTopic || undefined;
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
       const publishedIds: string[] = [];
       let previousPostId: string | undefined = undefined;
+      let topicTagAppliedCount = 0;
+      let topicTagSkippedCount = 0;
 
-      for (let i = 0; i < posts.length; i++) {
-        const text = posts[i];
+      for (let i = 0; i < normalizedPosts.length; i++) {
+        const text = normalizedPosts[i].content;
         if (!text?.trim()) continue;
-        const postId = await threads.postThread(user.threadsAccessToken, profile.id, text, {
-          replyToId: previousPostId,
-          topicTag: i === 0 ? resolvedTopic : undefined,
-        });
+        const applyTopicTag = !!resolvedTopic && !!normalizedPosts[i].useTopicTag;
+        let postId: string;
+        try {
+          postId = await threads.postThread(user.threadsAccessToken, profile.id, text, {
+            replyToId: previousPostId,
+            topicTag: applyTopicTag ? resolvedTopic : undefined,
+          });
+        } catch (err: any) {
+          const message = String(err?.message || "").toLowerCase();
+          const isTopicFallbackCandidate =
+            applyTopicTag &&
+            !!previousPostId &&
+            (message.includes("topic") || message.includes("unsupported") || message.includes("parameter"));
+
+          if (!isTopicFallbackCandidate) {
+            throw err;
+          }
+
+          postId = await threads.postThread(user.threadsAccessToken, profile.id, text, {
+            replyToId: previousPostId,
+            topicTag: undefined,
+          });
+          topicTagSkippedCount++;
+        }
+        if (applyTopicTag) topicTagAppliedCount++;
         publishedIds.push(postId);
         previousPostId = postId;
-        if (i < posts.length - 1) await new Promise(r => setTimeout(r, 1500));
+        if (i < normalizedPosts.length - 1) await new Promise(r => setTimeout(r, 1500));
       }
 
-      res.json({ success: true, publishedIds, count: publishedIds.length });
+      res.json({
+        success: true,
+        publishedIds,
+        count: publishedIds.length,
+        topicTagAppliedCount: Math.max(topicTagAppliedCount - topicTagSkippedCount, 0),
+        topicTagSkippedCount,
+      });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -1303,7 +1392,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!content) return res.status(400).json({ error: "Content required" });
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
-      const replyId = await threads.postThread(user.threadsAccessToken, profile.id, content, { replyToId: req.params.postId });
+      const postId = Array.isArray(req.params.postId) ? req.params.postId[0] : req.params.postId;
+      const replyId = await threads.postThread(user.threadsAccessToken, profile.id, content, { replyToId: postId });
       res.json({ success: true, replyId });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -1314,7 +1404,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
-      await threads.likePost(user.threadsAccessToken, req.params.mediaId, profile.id);
+      const mediaId = Array.isArray(req.params.mediaId) ? req.params.mediaId[0] : req.params.mediaId;
+      await threads.likePost(user.threadsAccessToken, mediaId, profile.id);
       res.json({ success: true });
     } catch (err: any) {
       const message = String(err?.message || "");

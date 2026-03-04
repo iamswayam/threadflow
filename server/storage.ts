@@ -1,15 +1,17 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { eq, desc, and, lte } from "drizzle-orm";
+import { eq, desc, and, lte, inArray } from "drizzle-orm";
 import {
-  users, scheduledPosts, bulkQueues, bulkQueueItems, followUpThreads,
+  users, scheduledPosts, bulkQueues, bulkQueueItems, followUpThreads, postMetadata,
   type User, type InsertUser,
   type ScheduledPost, type InsertScheduledPost,
   type BulkQueue, type InsertBulkQueue,
   type BulkQueueItem, type InsertBulkQueueItem,
   type FollowUpThread, type InsertFollowUpThread,
   type BulkQueueWithItems,
+  type PostMetadata,
+  type InsertPostMetadata,
 } from "@shared/schema";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -30,6 +32,7 @@ export interface IStorage {
     aiPerplexityApiKey?: string | null;
   }): Promise<User>;
   updateUserPassword(userId: string, password: string): Promise<void>;
+  updateUserDefaultTopic(userId: string, topic: string | null): Promise<User>;
   deleteUser(userId: string): Promise<void>;
 
   getScheduledPosts(userId: string): Promise<ScheduledPost[]>;
@@ -52,6 +55,12 @@ export interface IStorage {
   updateFollowUpThread(id: string, updates: Partial<FollowUpThread>): Promise<void>;
   deleteFollowUpThread(id: string): Promise<void>;
   getPendingDueFollowUps(): Promise<(FollowUpThread & { userToken: string | null })[]>;
+
+  upsertPostMetadata(
+    userId: string,
+    metadata: { threadsPostId: string; appTag?: string | null; topicTag?: string | null; contentPreview?: string | null },
+  ): Promise<PostMetadata>;
+  getPostMetadataByThreadsIds(userId: string, threadsPostIds: string[]): Promise<PostMetadata[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -82,6 +91,10 @@ export class DatabaseStorage implements IStorage {
   }
   async updateUserPassword(userId: string, password: string): Promise<void> {
     await db.update(users).set({ password }).where(eq(users.id, userId));
+  }
+  async updateUserDefaultTopic(userId: string, topic: string | null): Promise<User> {
+    const [user] = await db.update(users).set({ defaultTopic: topic }).where(eq(users.id, userId)).returning();
+    return user;
   }
   async deleteUser(userId: string): Promise<void> {
     await db.delete(users).where(eq(users.id, userId));
@@ -173,6 +186,45 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(users, eq(followUpThreads.userId, users.id))
       .where(and(eq(followUpThreads.status, "pending"), lte(followUpThreads.scheduledAt, new Date())));
     return rows.map(r => ({ ...r.followUp, userToken: r.userToken }));
+  }
+
+  async upsertPostMetadata(
+    userId: string,
+    metadata: { threadsPostId: string; appTag?: string | null; topicTag?: string | null; contentPreview?: string | null },
+  ): Promise<PostMetadata> {
+    const [existing] = await db.select()
+      .from(postMetadata)
+      .where(and(eq(postMetadata.userId, userId), eq(postMetadata.threadsPostId, metadata.threadsPostId)));
+
+    const updates = {
+      appTag: metadata.appTag ?? null,
+      topicTag: metadata.topicTag ?? null,
+      contentPreview: metadata.contentPreview ?? null,
+    };
+
+    if (existing) {
+      const [updated] = await db.update(postMetadata)
+        .set(updates)
+        .where(eq(postMetadata.id, existing.id))
+        .returning();
+      return updated;
+    }
+
+    const [created] = await db.insert(postMetadata)
+      .values({
+        userId,
+        threadsPostId: metadata.threadsPostId,
+        ...updates,
+      })
+      .returning();
+    return created;
+  }
+
+  async getPostMetadataByThreadsIds(userId: string, threadsPostIds: string[]): Promise<PostMetadata[]> {
+    if (!threadsPostIds.length) return [];
+    return db.select()
+      .from(postMetadata)
+      .where(and(eq(postMetadata.userId, userId), inArray(postMetadata.threadsPostId, threadsPostIds)));
   }
 }
 

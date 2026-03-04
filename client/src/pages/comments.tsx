@@ -134,7 +134,7 @@ function CommentCard({
         </Avatar>
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
-            <span className="text-sm font-medium text-foreground">
+            <span className="text-sm font-medium text-username">
               {comment.username ? `@${comment.username}` : "Anonymous"}
             </span>
             {isNew && <Badge variant="outline" className="text-xs border-primary/30 text-primary">New</Badge>}

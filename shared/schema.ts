@@ -21,6 +21,16 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
+export const postMetadata = pgTable("post_metadata", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  threadsPostId: text("threads_post_id").notNull(),
+  appTag: text("app_tag"),
+  topicTag: text("topic_tag"),
+  contentPreview: text("content_preview"),
+  createdAt: timestamp("created_at").notNull().default(sql`now()`),
+});
+
 export const scheduledPosts = pgTable("scheduled_posts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
@@ -108,6 +118,10 @@ export const insertFollowUpThreadSchema = createInsertSchema(followUpThreads).om
 export const insertThreadChainSchema = createInsertSchema(threadChains).omit({
   id: true, status: true, createdAt: true, userId: true,
 });
+export const insertPostMetadataSchema = createInsertSchema(postMetadata).omit({
+  id: true,
+  createdAt: true,
+});
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -123,4 +137,6 @@ export type InsertFollowUpThread = z.infer<typeof insertFollowUpThreadSchema>;
 export type ThreadChain = typeof threadChains.$inferSelect;
 export type ThreadChainPost = typeof threadChainPosts.$inferSelect;
 export type ThreadChainWithPosts = ThreadChain & { posts: ThreadChainPost[] };
+export type PostMetadata = typeof postMetadata.$inferSelect;
+export type InsertPostMetadata = z.infer<typeof insertPostMetadataSchema>;
 

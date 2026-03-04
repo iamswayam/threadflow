@@ -165,8 +165,8 @@ export default function Settings() {
           <CardContent>
             <div className="mb-4 flex items-center gap-2">
               <div className={`w-2 h-2 rounded-full ${user?.threadsAccessToken ? "bg-status-online" : "bg-status-offline"}`} />
-              <span className="text-sm text-muted-foreground">
-                {user?.threadsAccessToken ? `Connected as @${user.threadsUsername || "unknown"}` : "Not connected"}
+              <span className="text-sm font-medium text-username">
+                {user?.threadsAccessToken ? `@${user.threadsUsername || "unknown"}` : "Not connected"}
               </span>
               {user?.threadsAccessToken && (
                 <Button size="sm" variant="ghost" onClick={onDisconnect} className="ml-auto text-destructive" data-testid="button-disconnect">

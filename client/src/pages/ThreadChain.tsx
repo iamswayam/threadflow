@@ -1,16 +1,15 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
 import {
-  Plus, Trash2, Play, GripVertical, CheckCircle2, XCircle,
-  Loader2, Link2, Hash, ChevronDown, ChevronUp, Info,
+  Plus, Trash2, Play, GripVertical, Loader2, Link2, Hash, Info,
 } from "lucide-react";
 
 const MAX_CHARS = 500;
@@ -18,6 +17,7 @@ const MAX_CHARS = 500;
 interface ChainPost {
   id: string;
   content: string;
+  useTopicTag: boolean;
 }
 
 const POPULAR_TOPICS = [
@@ -32,11 +32,12 @@ export default function ThreadChain() {
   const { user } = useAuth();
 
   const [posts, setPosts] = useState<ChainPost[]>([
-    { id: "1", content: "" },
-    { id: "2", content: "" },
-    { id: "3", content: "" },
+    { id: "1", content: "", useTopicTag: true },
+    { id: "2", content: "", useTopicTag: true },
+    { id: "3", content: "", useTopicTag: true },
   ]);
   const [topicInput, setTopicInput] = useState(user?.defaultTopic || "");
+  const [applyTopicToAll, setApplyTopicToAll] = useState(true);
   const [showTopicSuggestions, setShowTopicSuggestions] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [publishedCount, setPublishedCount] = useState(0);
@@ -51,7 +52,7 @@ export default function ThreadChain() {
       toast({ title: "Max 20 posts per chain", variant: "destructive" });
       return;
     }
-    setPosts(prev => [...prev, { id: Date.now().toString(), content: "" }]);
+    setPosts(prev => [...prev, { id: Date.now().toString(), content: "", useTopicTag: applyTopicToAll }]);
   };
 
   const removePost = (id: string) => {
@@ -61,6 +62,15 @@ export default function ThreadChain() {
 
   const updatePost = (id: string, content: string) => {
     setPosts(prev => prev.map(p => p.id === id ? { ...p, content } : p));
+  };
+
+  const updatePostTopicUsage = (id: string, useTopicTag: boolean) => {
+    setPosts(prev => prev.map(p => (p.id === id ? { ...p, useTopicTag } : p)));
+  };
+
+  const setAllPostsTopicUsage = (enabled: boolean) => {
+    setApplyTopicToAll(enabled);
+    setPosts(prev => prev.map(p => ({ ...p, useTopicTag: enabled })));
   };
 
   const handleDragStart = (e: React.DragEvent, idx: number) => {
@@ -94,18 +104,24 @@ export default function ThreadChain() {
 
     try {
       const result = await apiRequest("POST", "/api/thread-chain", {
-        posts: validPosts.map(p => p.content.trim()),
+        posts: validPosts.map((p) => ({ content: p.content.trim(), useTopicTag: p.useTopicTag })),
         topicTag: topicInput.trim() || undefined,
       });
 
       setPublishedCount(result.count);
       toast({
-        title: `✅ Chain published! ${result.count} posts live`,
-        description: topicInput ? `Tagged as ✦ ${topicInput}` : "Check your Threads profile!",
+        title: `Chain published! ${result.count} posts live`,
+        description: topicInput
+          ? `Topic: ${topicInput} | Applied to ${result.topicTagAppliedCount ?? 0} post(s)`
+          : "Check your Threads profile!",
       });
 
       // Reset
-      setPosts([{ id: "1", content: "" }, { id: "2", content: "" }, { id: "3", content: "" }]);
+      setPosts([
+        { id: "1", content: "", useTopicTag: applyTopicToAll },
+        { id: "2", content: "", useTopicTag: applyTopicToAll },
+        { id: "3", content: "", useTopicTag: applyTopicToAll },
+      ]);
       setTopicInput(user?.defaultTopic || "");
     } catch (err: any) {
       const msg = err.message?.includes(":") ? err.message.split(":").slice(1).join(":").trim() : err.message;
@@ -131,7 +147,7 @@ export default function ThreadChain() {
         <Info className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
         <div className="text-sm text-muted-foreground space-y-1">
           <p><span className="text-foreground font-medium">How it works:</span> All posts are published instantly. Post 1 is the root, Post 2 replies to Post 1, Post 3 replies to Post 2, and so on — just like you see on Threads.</p>
-          <p>The <span className="text-primary">topic tag</span> is only applied to the first post (Threads API limitation for replies).</p>
+          <p>Set one topic on the right, apply it to all posts in one click, then remove it from specific posts on the left.</p>
         </div>
       </div>
 
@@ -169,15 +185,31 @@ export default function ThreadChain() {
                         <span className="text-xs text-muted-foreground">↩ replies to post {idx}</span>
                       )}
                     </div>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => removePost(post.id)}
-                      disabled={posts.length <= 1}
-                      data-testid={`button-remove-chain-post-${idx}`}
-                    >
-                      <Trash2 className="w-4 h-4 text-destructive" />
-                    </Button>
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id={`checkbox-chain-topic-${post.id}`}
+                          checked={post.useTopicTag}
+                          disabled={!topicInput.trim()}
+                          onCheckedChange={(checked) => updatePostTopicUsage(post.id, checked === true)}
+                        />
+                        <label
+                          htmlFor={`checkbox-chain-topic-${post.id}`}
+                          className={`text-xs font-medium ${topicInput.trim() ? "text-foreground" : "text-muted-foreground"}`}
+                        >
+                          Use topic
+                        </label>
+                      </div>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => removePost(post.id)}
+                        disabled={posts.length <= 1}
+                        data-testid={`button-remove-chain-post-${idx}`}
+                      >
+                        <Trash2 className="w-4 h-4 text-destructive" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="relative">
                     <Textarea
@@ -219,7 +251,7 @@ export default function ThreadChain() {
                 <Hash className="w-4 h-4 text-primary" />
                 Topic Tag
               </CardTitle>
-              <CardDescription>Applied to the first post only</CardDescription>
+              <CardDescription>Apply to all posts, then customize per post</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {user?.defaultTopic && topicInput === user.defaultTopic && (
@@ -250,9 +282,20 @@ export default function ThreadChain() {
                   </div>
                 )}
               </div>
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Apply topic to all posts</p>
+                  <p className="text-xs text-muted-foreground">You can uncheck any post from the Chain Posts list.</p>
+                </div>
+                <Checkbox
+                  checked={applyTopicToAll}
+                  disabled={!topicInput.trim()}
+                  onCheckedChange={(checked) => setAllPostsTopicUsage(checked === true)}
+                />
+              </div>
               {topicInput && (
                 <p className="text-xs text-muted-foreground">
-                  Post 1 will show: <span className="text-primary font-medium">✦ {topicInput}</span>
+                  Topic selected: <span className="text-primary font-medium">{topicInput}</span>
                 </p>
               )}
             </CardContent>
@@ -308,7 +351,7 @@ export default function ThreadChain() {
               <div className="text-xs text-muted-foreground space-y-1 pt-1 border-t border-border">
                 <p>⚡ Posts publish in sequence with a small delay between each</p>
                 <p>📌 Pin the first post manually in the Threads app after publishing</p>
-                <p>✦ Topic tag applies to Post 1 only (API limitation)</p>
+                <p>✦ Topic can be set globally and removed per post from the chain list</p>
               </div>
             </CardContent>
           </Card>

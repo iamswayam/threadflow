@@ -81,6 +81,8 @@ export default {
           busy: "rgb(239 68 68)",
           offline: "rgb(156 163 175)",
         },
+        username: "#1FC1D6",
+        usernameaccent: "#F59E0B",
       },
       fontFamily: {
         sans: ["var(--font-sans)"],

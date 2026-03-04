@@ -8,6 +8,7 @@ interface AuthUser {
   threadsUsername?: string | null;
   threadsProfilePicUrl?: string | null;
   threadsFollowerCount?: number | null;
+  defaultTopic?: string | null;
 }
 
 interface AuthContextType {
