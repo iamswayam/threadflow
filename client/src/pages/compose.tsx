@@ -235,7 +235,7 @@ export default function Compose() {
                       <span className="text-xs font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP</span>
                       <Input
                         className="h-8 border-0 bg-transparent px-0 text-sm focus-visible:ring-0"
-                        placeholder="Personal tag (e.g. saturn, nakshatra, transit)"
+                        placeholder="Add a personal tag"
                         value={appTag}
                         onChange={(e) => setAppTag(e.target.value.slice(0, 60))}
                         disabled={!user?.threadsAccessToken}
