@@ -12,7 +12,7 @@ import { Link } from "wouter";
 import {
   Clock, Layers, CheckCircle2, Timer, MessageSquare, ArrowRight,
   PenSquare, Send, Zap, TrendingUp, Hash, X, BarChart2, Repeat2,
-  Quote, Link2, ExternalLink, Sparkles, WandSparkles, Users,
+  Quote, Link2, ExternalLink, Sparkles, WandSparkles, Users, AlertCircle,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
@@ -115,6 +115,24 @@ function StatusBadge({ status }: { status: string }) {
   };
   const cfg = map[status] || { label: status, variant: "outline" as const };
   return <Badge variant={cfg.variant}>{cfg.label}</Badge>;
+}
+
+// Character count warning component for AI responses
+function CharacterCount({ count }: { count: number }) {
+  const THREADS_LIMIT = 500; // Threads post limit
+  const WARNING_THRESHOLD = 450;
+  
+  const isOverLimit = count > THREADS_LIMIT;
+  const isNearLimit = count > WARNING_THRESHOLD && !isOverLimit;
+  
+  if (count <= WARNING_THRESHOLD) return null;
+  
+  return (
+    <span className={`flex items-center gap-1 text-[10px] ${isOverLimit ? "text-destructive" : "text-amber-500"}`}>
+      <AlertCircle className="w-3 h-3" />
+      {isOverLimit ? `${count} chars (OVER LIMIT)` : `${count} chars`}
+    </span>
+  );
 }
 
 function ProfileCard() {
@@ -511,6 +529,13 @@ function AiPostAssistant({
                     : "mr-5 bg-background border border-border text-foreground"
                 }`}
               >
+                {message.role === "assistant" && (
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Sparkles className="w-3 h-3 text-primary" />
+                    <span className="font-medium text-[10px] uppercase text-muted-foreground">AI Response</span>
+                    <CharacterCount count={message.content.length} />
+                  </div>
+                )}
                 {message.content}
               </div>
             ))
