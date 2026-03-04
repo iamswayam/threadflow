@@ -101,7 +101,8 @@ export default function MyContent() {
     enabled: !!selectedTag,
   });
 
-  const getTagCount = (tag: string) => allPosts.filter((p) => p.appTag === tag).length;
+  const getTagCount = (tag: string) =>
+    allPosts.filter((p) => p.appTag?.split(",").map((t) => t.trim()).includes(tag)).length;
   const totalPosts = allPosts.length;
 
   const displayPosts: PostWithInsights[] = selectedTag ? (tagInsights?.posts ?? []) : posts;
@@ -293,9 +294,16 @@ export default function MyContent() {
 
                           <div className="flex flex-wrap items-center gap-2 mt-2">
                             {post.appTag && (
-                              <Badge className="bg-primary/10 text-primary hover:bg-primary/20">
-                                #{post.appTag}
-                              </Badge>
+                              <div className="flex flex-wrap gap-1">
+                                {post.appTag.split(",").map(tag => tag.trim()).filter(Boolean).map(tag => (
+                                  <span
+                                    key={tag}
+                                    className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
                             )}
                             {post.topicTag && <span className="text-xs text-primary">* {post.topicTag}</span>}
                           </div>

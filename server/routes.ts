@@ -67,13 +67,28 @@ function normalizeReplyCenterRepliesPerPost(value: unknown): number {
 }
 
 function normalizeAppTag(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.length > 60) {
-    throw new Error("App tag must be 60 characters or less");
+  let tags: string[] = [];
+
+  if (Array.isArray(value)) {
+    tags = value.map((v) => String(v).trim()).filter(Boolean);
+  } else if (typeof value === "string") {
+    tags = value
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+  } else {
+    return undefined;
   }
-  return trimmed;
+
+  tags = tags.map((t) => t.charAt(0).toUpperCase() + t.slice(1));
+  tags = tags.slice(0, 5);
+
+  if (tags.some((t) => t.length > 60)) {
+    throw new Error("Each tag must be 60 characters or less");
+  }
+
+  if (tags.length === 0) return undefined;
+  return tags.join(",");
 }
 
 function toTimestampMs(value: unknown): number | null {
@@ -668,9 +683,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN", message: "Connect your Threads account first" });
-    const { content, mediaUrl, mediaType, topicTag, appTag } = req.body;
+    const { content, mediaUrl, mediaType, topicTag, appTag: rawAppTag } = req.body;
     if (!content) return res.status(400).json({ error: "Content is required" });
     try {
+      const appTag = normalizeAppTag(rawAppTag) || null;
       const profile = await threads.getProfile(user.threadsAccessToken);
       const resolvedTopicTag = topicTag || user.defaultTopic || undefined;
       const postId = await threads.postThread(user.threadsAccessToken, profile.id, content, {
@@ -680,22 +696,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
       await storage.upsertPostMetadata(userId, {
         threadsPostId: postId,
-        appTag: appTag || null,
+        appTag,
         topicTag: resolvedTopicTag || null,
         contentPreview: typeof content === "string" ? content.slice(0, 280) : null,
       });
       // Save to scheduledPosts for tracking
+      console.log("[publish] saving appTag:", appTag, "for post:", postId);
       await storage.createScheduledPost(userId, {
         content,
         scheduledAt: new Date(),
         topicTag: resolvedTopicTag || null,
         mediaUrl: mediaUrl || null,
         mediaType: mediaType || "TEXT",
-        appTag: appTag || null,
+        appTag,
         status: "published",
         threadsPostId: postId,
       } as any);
-      res.json({ success: true, postId, appTag: appTag || null });
+      res.json({ success: true, postId, appTag });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -1221,7 +1238,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/posts/schedule", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     try {
-      const post = await storage.createScheduledPost(userId, req.body);
+      const post = await storage.createScheduledPost(userId, {
+        ...req.body,
+        appTag: normalizeAppTag(req.body?.appTag) || null,
+      });
       res.json(post);
     } catch (err: any) { res.status(400).json({ error: err.message }); }
   });

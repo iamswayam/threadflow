@@ -46,7 +46,6 @@ function StatusIcon({ status }: { status: string }) {
   if (status === "failed") return <XCircle className="w-3.5 h-3.5 text-destructive" />;
   return <Clock className="w-3.5 h-3.5 text-muted-foreground" />;
 }
-
 export default function Compose() {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -54,7 +53,8 @@ export default function Compose() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [topicInput, setTopicInput] = useState(user?.defaultTopic || "");
   const [showTopicSuggestions, setShowTopicSuggestions] = useState(false);
-  const [appTag, setAppTag] = useState("");
+  const [appTags, setAppTags] = useState<string[]>([]);
+  const [appTagInput, setAppTagInput] = useState("");
 
   const filteredTopics = POPULAR_TOPICS.filter(t =>
     t.toLowerCase().includes(topicInput.toLowerCase()) && t !== topicInput
@@ -79,7 +79,8 @@ export default function Compose() {
       toast({ title: "Post published!", description: topicInput ? `Tagged as ✦ ${topicInput}` : "Your thread is now live on Threads." });
       form.reset();
       setTopicInput(user?.defaultTopic || "");
-      setAppTag("");
+      setAppTags([]);
+      setAppTagInput("");
     },
     onError: (err: any) => {
       const msg = err.message?.includes("NO_TOKEN")
@@ -96,7 +97,8 @@ export default function Compose() {
       form.reset();
       setShowSchedule(false);
       setTopicInput(user?.defaultTopic || "");
-      setAppTag("");
+      setAppTags([]);
+      setAppTagInput("");
       queryClient.invalidateQueries({ queryKey: ["/api/posts/scheduled"] });
     },
     onError: (err: any) => {
@@ -118,7 +120,7 @@ export default function Compose() {
       mediaUrl: data.mediaUrl || undefined,
       mediaType: data.mediaType,
       topicTag: topicInput.trim() || undefined,
-      appTag: appTag.trim() || undefined,
+      appTag: appTags.join(",") || undefined,
     });
   };
 
@@ -132,7 +134,7 @@ export default function Compose() {
       mediaUrl: data.mediaUrl || null,
       mediaType: data.mediaType,
       topicTag: topicInput.trim() || undefined,
-      appTag: appTag.trim() || undefined,
+      appTag: appTags.join(",") || undefined,
       scheduledAt: new Date(data.scheduledAt).toISOString(),
     });
   };
@@ -185,7 +187,7 @@ export default function Compose() {
                     )}
                   />
 
-                  {/* ✅ Topic Tag Field */}
+                  {/* Topic Tag Field */}
                   <div className="space-y-1.5">
                     <div className="flex items-center gap-2">
                       <Hash className="w-4 h-4 text-muted-foreground" />
@@ -229,21 +231,73 @@ export default function Compose() {
                     )}
                   </div>
 
-                  {/* App Tag - personal tag (not posted to Threads) */}
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/30">
-                      <span className="text-xs font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP</span>
-                      <Input
-                        className="h-8 border-0 bg-transparent px-0 text-sm focus-visible:ring-0"
-                        placeholder="Add a personal tag"
-                        value={appTag}
-                        onChange={(e) => setAppTag(e.target.value.slice(0, 60))}
-                        disabled={!user?.threadsAccessToken}
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground">Saved in ThreadFlow only — not posted to Threads</p>
-                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                      <span className="text-xs font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP TAG</span>
+                      <span className="text-xs text-muted-foreground font-normal">Personal label - not posted to Threads</span>
+                    </label>
 
+                    {appTags.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-1.5">
+                        {appTags.map(tag => (
+                          <span
+                            key={tag}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
+                          >
+                            {tag}
+                            <button
+                              type="button"
+                              onClick={() => setAppTags(prev => prev.filter(t => t !== tag))}
+                              className="ml-0.5 hover:text-destructive transition-colors"
+                            >
+                              &times;
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {appTags.length < 5 && (
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/20 focus-within:border-primary/50 transition-colors">
+                        <input
+                          className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
+                          placeholder="Add a personal tag"
+                          value={appTagInput}
+                          onChange={e => setAppTagInput(e.target.value)}
+                          onKeyDown={e => {
+                            if ((e.key === "Enter" || e.key === ",") && appTagInput.trim()) {
+                              e.preventDefault();
+                              const newTag = appTagInput.trim().charAt(0).toUpperCase() + appTagInput.trim().slice(1);
+                              if (!appTags.includes(newTag) && appTags.length < 5) {
+                                setAppTags(prev => [...prev, newTag]);
+                              }
+                              setAppTagInput("");
+                            }
+                            if (e.key === "Backspace" && !appTagInput && appTags.length > 0) {
+                              setAppTags(prev => prev.slice(0, -1));
+                            }
+                          }}
+                          maxLength={60}
+                          disabled={!user?.threadsAccessToken}
+                        />
+                        {appTagInput.trim() && (
+                          <button
+                            type="button"
+                            className="text-xs text-primary hover:text-primary/80 font-medium"
+                            onClick={() => {
+                              const newTag = appTagInput.trim().charAt(0).toUpperCase() + appTagInput.trim().slice(1);
+                              if (!appTags.includes(newTag) && appTags.length < 5) {
+                                setAppTags(prev => [...prev, newTag]);
+                              }
+                              setAppTagInput("");
+                            }}
+                          >
+                            Add
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                   <div className="space-y-3">
                     <FormField
                       control={form.control}
@@ -394,3 +448,4 @@ export default function Compose() {
     </div>
   );
 }
+

@@ -240,7 +240,11 @@ export class DatabaseStorage implements IStorage {
           isNotNull(scheduledPosts.appTag)
         )
       );
-    return rows.map(r => r.appTag!).filter(Boolean);
+    const allTags = rows
+      .flatMap((r) => (r.appTag || "").split(","))
+      .map((t) => t.trim())
+      .filter(Boolean);
+    return Array.from(new Set(allTags)).sort();
   }
 
   async getPostsByAppTag(
@@ -248,12 +252,18 @@ export class DatabaseStorage implements IStorage {
     appTag: string | null
   ): Promise<ScheduledPost[]> {
     if (appTag) {
-      return db.select().from(scheduledPosts)
-        .where(and(
-          eq(scheduledPosts.userId, userId),
-          eq(scheduledPosts.appTag, appTag)
-        ))
+      const requestedTag = appTag.trim();
+      const allPosts = await db
+        .select()
+        .from(scheduledPosts)
+        .where(eq(scheduledPosts.userId, userId))
         .orderBy(desc(scheduledPosts.createdAt));
+      return allPosts.filter((p) =>
+        p.appTag
+          ?.split(",")
+          .map((t) => t.trim())
+          .includes(requestedTag),
+      );
     }
     return db.select().from(scheduledPosts)
       .where(eq(scheduledPosts.userId, userId))

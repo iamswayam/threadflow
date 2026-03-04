@@ -239,6 +239,8 @@ function QuickPost({
   const [content, setContent] = useState("");
   const [topicInput, setTopicInput] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [appTags, setAppTags] = useState<string[]>([]);
+  const [appTagInput, setAppTagInput] = useState("");
   const { toast } = useToast();
   const { user } = useAuth();
 
@@ -265,6 +267,8 @@ function QuickPost({
       toast({ title: "Posted!", description: details.length ? details.join(" | ") : "Thread published!" });
       setContent("");
       setTopicInput(user?.defaultTopic || "");
+      setAppTags([]);
+      setAppTagInput("");
     },
     onError: (err: any) => {
       const msg = err.message?.includes(":") ? err.message.split(":").slice(1).join(":").trim() : err.message;
@@ -321,6 +325,74 @@ function QuickPost({
 
         </div>
 
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+            <span className="text-xs font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP TAG</span>
+            <span className="text-xs text-muted-foreground font-normal">Personal label - not posted to Threads</span>
+          </label>
+
+          {appTags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-1.5">
+              {appTags.map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
+                >
+                  {tag}
+                  <button
+                    type="button"
+                    onClick={() => setAppTags(prev => prev.filter(t => t !== tag))}
+                    className="ml-0.5 hover:text-destructive transition-colors"
+                  >
+                    &times;
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {appTags.length < 5 && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/20 focus-within:border-primary/50 transition-colors">
+              <input
+                className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
+                placeholder="Add a personal tag"
+                value={appTagInput}
+                onChange={e => setAppTagInput(e.target.value)}
+                onKeyDown={e => {
+                  if ((e.key === "Enter" || e.key === ",") && appTagInput.trim()) {
+                    e.preventDefault();
+                    const newTag = appTagInput.trim().charAt(0).toUpperCase() + appTagInput.trim().slice(1);
+                    if (!appTags.includes(newTag) && appTags.length < 5) {
+                      setAppTags(prev => [...prev, newTag]);
+                    }
+                    setAppTagInput("");
+                  }
+                  if (e.key === "Backspace" && !appTagInput && appTags.length > 0) {
+                    setAppTags(prev => prev.slice(0, -1));
+                  }
+                }}
+                maxLength={60}
+                disabled={!user?.threadsAccessToken}
+              />
+              {appTagInput.trim() && (
+                <button
+                  type="button"
+                  className="text-xs text-primary hover:text-primary/80 font-medium"
+                  onClick={() => {
+                    const newTag = appTagInput.trim().charAt(0).toUpperCase() + appTagInput.trim().slice(1);
+                    if (!appTags.includes(newTag) && appTags.length < 5) {
+                      setAppTags(prev => [...prev, newTag]);
+                    }
+                    setAppTagInput("");
+                  }}
+                >
+                  Add
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Post textarea */}
         <Textarea
           placeholder={user?.threadsAccessToken ? "What's on your mind?" : "Connect your Threads account to post..."}
@@ -342,6 +414,7 @@ function QuickPost({
             onClick={() => publish({
               content: content.trim(),
               topicTag: topicInput.trim() || undefined,
+              appTag: appTags.join(",") || undefined,
             })}
             data-testid="button-quick-post"
           >
@@ -625,11 +698,16 @@ function RecentPosts() {
                       {post.replies_count > 0 && <span className="ml-2">💬 {post.replies_count}</span>}
                     </p>
                     {post.appTag && (
-                      <p className="text-[11px] mt-1">
-                        <span className="inline-flex items-center rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary">
-                          APP TAG #{post.appTag}
-                        </span>
-                      </p>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {post.appTag.split(",").map((tag: string) => tag.trim()).filter((tag: string) => Boolean(tag)).map((tag: string) => (
+                          <span
+                            key={tag}
+                            className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary/10 text-primary border border-primary/20"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </div>
                   {/* Repost + Quote buttons appear on hover */}
