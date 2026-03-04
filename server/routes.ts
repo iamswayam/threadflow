@@ -91,6 +91,66 @@ function normalizeAppTag(value: unknown): string | undefined {
   return tags.join(",");
 }
 
+function extractDnaSignals(content: string, publishedAt: Date, mediaUrl?: string | null) {
+  const normalizedContent = String(content || "");
+  const trimmedContent = normalizedContent.trim();
+  const firstLine = normalizedContent.split(/\r?\n/)[0]?.trim() || "";
+  const firstLineLower = firstLine.toLowerCase();
+
+  const questionWordPattern = /^(who|what|when|where|why|how|is|are|can|could|should|do|does|did|will|would)\b/i;
+  const numberPattern = /^(?:\d+)\b|\b\d+\s+(reasons|ways|things)\b/i;
+  const quotePattern = /^["'“”‘’]/;
+  const commandPattern = /^(stop|never|always|start|don't|dont)\b/i;
+
+  let hookStyle: "question" | "number" | "statement" | "quote" | "command" = "statement";
+  if (questionWordPattern.test(firstLine) || firstLine.endsWith("?")) {
+    hookStyle = "question";
+  } else if (numberPattern.test(firstLineLower)) {
+    hookStyle = "number";
+  } else if (quotePattern.test(firstLine)) {
+    hookStyle = "quote";
+  } else if (commandPattern.test(firstLineLower)) {
+    hookStyle = "command";
+  }
+
+  const ctaPattern =
+    /\b(comment|share|follow|save|tag someone|let me know|what do you think|drop a|agree|thoughts)\b/i;
+  const hasCta = trimmedContent.endsWith("?") || ctaPattern.test(normalizedContent);
+  const hasMedia = !!(mediaUrl && String(mediaUrl).trim());
+
+  return {
+    postLength: normalizedContent.length,
+    wordCount: trimmedContent ? trimmedContent.split(/\s+/).filter(Boolean).length : 0,
+    hourOfDay: publishedAt.getHours(),
+    dayOfWeek: publishedAt.getDay(),
+    hookStyle,
+    hasCta,
+    hasMedia,
+  };
+}
+
+function toNullableInt(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n);
+}
+
+async function refreshScheduledPostInsights(
+  accessToken: string,
+  scheduledPostId: string,
+  threadsPostId: string,
+) {
+  const insights = await threads.getPostInsights(accessToken, threadsPostId);
+  await storage.updateScheduledPost(scheduledPostId, {
+    insightsViews: toNullableInt(insights?.views),
+    insightsLikes: toNullableInt(insights?.likes),
+    insightsReplies: toNullableInt(insights?.replies),
+    insightsReposts: toNullableInt(insights?.reposts),
+    insightsQuotes: toNullableInt(insights?.quotes),
+    insightsFetchedAt: new Date(),
+  });
+}
+
 function toTimestampMs(value: unknown): number | null {
   if (typeof value !== "string") return null;
   const ms = Date.parse(value);
@@ -363,7 +423,13 @@ function startScheduler() {
             videoUrl: post.mediaType === "VIDEO" ? post.mediaUrl || undefined : undefined,
             topicTag: (post as any).topicTag || user?.defaultTopic || undefined,
           });
-          await storage.updateScheduledPost(post.id, { status: "published", threadsPostId: threadId });
+          const publishedAt = new Date();
+          const dnaSignals = extractDnaSignals(post.content, publishedAt, post.mediaUrl || null);
+          await storage.updateScheduledPost(post.id, {
+            status: "published",
+            threadsPostId: threadId,
+            ...dnaSignals,
+          });
         } catch (err: any) {
           await storage.updateScheduledPost(post.id, { status: "failed", errorMessage: err.message });
         }
@@ -694,6 +760,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         videoUrl: mediaType === "VIDEO" ? mediaUrl : undefined,
         topicTag: resolvedTopicTag,
       });
+      const publishedAt = new Date();
+      const dnaSignals = extractDnaSignals(content, publishedAt, mediaUrl || null);
       await storage.upsertPostMetadata(userId, {
         threadsPostId: postId,
         appTag,
@@ -702,16 +770,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
       // Save to scheduledPosts for tracking
       console.log("[publish] saving appTag:", appTag, "for post:", postId);
-      await storage.createScheduledPost(userId, {
+      const createdPost = await storage.createScheduledPost(userId, {
         content,
-        scheduledAt: new Date(),
+        scheduledAt: publishedAt,
         topicTag: resolvedTopicTag || null,
         mediaUrl: mediaUrl || null,
         mediaType: mediaType || "TEXT",
         appTag,
+        ...dnaSignals,
         status: "published",
         threadsPostId: postId,
       } as any);
+      setTimeout(async () => {
+        try {
+          await refreshScheduledPostInsights(user.threadsAccessToken!, createdPost.id, postId);
+        } catch {
+          // Background insights refresh is best-effort only.
+        }
+      }, 10 * 60 * 1000);
       res.json({ success: true, postId, appTag });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -1280,6 +1356,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const posts = await storage.getPostsByAppTag(userId, tag || null);
     res.json(posts);
   });
+
+  app.get("/api/posts/dna-data", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const posts = await storage.getPostsWithDnaData(userId);
+    res.json({
+      count: posts.length,
+      ready: posts.length >= 15,
+      posts,
+    });
+  });
+
+  app.post("/api/posts/refresh-insights", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+
+    try {
+      const candidates = await storage.getPostsNeedingInsightsRefresh(userId);
+      const targets = candidates.slice(0, 20);
+      let refreshed = 0;
+
+      for (const post of targets) {
+        if (!post.threadsPostId) continue;
+        try {
+          await refreshScheduledPostInsights(user.threadsAccessToken, post.id, post.threadsPostId);
+          refreshed++;
+        } catch {
+          // Best-effort per-post refresh, continue remaining posts.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+
+      res.json({ refreshed, total: targets.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/posts/tag-insights", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);

@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { eq, desc, and, lte, inArray, isNotNull } from "drizzle-orm";
+import { eq, desc, and, lte, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
 import {
   users, scheduledPosts, bulkQueues, bulkQueueItems, followUpThreads, postMetadata,
   type User, type InsertUser,
@@ -64,6 +64,8 @@ export interface IStorage {
 
   getUserAppTags(userId: string): Promise<string[]>;
   getPostsByAppTag(userId: string, appTag: string | null): Promise<ScheduledPost[]>;
+  getPostsNeedingInsightsRefresh(userId: string): Promise<ScheduledPost[]>;
+  getPostsWithDnaData(userId: string): Promise<ScheduledPost[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -268,6 +270,42 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(scheduledPosts)
       .where(eq(scheduledPosts.userId, userId))
       .orderBy(desc(scheduledPosts.createdAt));
+  }
+
+  async getPostsNeedingInsightsRefresh(userId: string): Promise<ScheduledPost[]> {
+    const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+    return db
+      .select()
+      .from(scheduledPosts)
+      .where(
+        and(
+          eq(scheduledPosts.userId, userId),
+          eq(scheduledPosts.status, "published"),
+          isNotNull(scheduledPosts.threadsPostId),
+          or(
+            isNull(scheduledPosts.insightsFetchedAt),
+            lt(scheduledPosts.insightsFetchedAt, sixHoursAgo),
+          ),
+        ),
+      )
+      .orderBy(desc(scheduledPosts.createdAt))
+      .limit(50);
+  }
+
+  async getPostsWithDnaData(userId: string): Promise<ScheduledPost[]> {
+    return db
+      .select()
+      .from(scheduledPosts)
+      .where(
+        and(
+          eq(scheduledPosts.userId, userId),
+          eq(scheduledPosts.status, "published"),
+          isNotNull(scheduledPosts.threadsPostId),
+          isNotNull(scheduledPosts.insightsViews),
+        ),
+      )
+      .orderBy(desc(scheduledPosts.createdAt))
+      .limit(200);
   }
 }
 

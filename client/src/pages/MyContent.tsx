@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -73,6 +73,14 @@ type TagInsights = {
 
 export default function MyContent() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem("tf_token");
+    void fetch("/api/posts/refresh-insights", {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).catch(() => {});
+  }, []);
 
   const { data: tags = [], isLoading: loadingTags } = useQuery<string[]>({
     queryKey: ["/api/posts/tags"],
