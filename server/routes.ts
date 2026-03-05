@@ -28,6 +28,10 @@ import { requireAuth, hashPassword, verifyPassword, signToken, verifyToken } fro
 
 function getUser(req: Request) { return (req as any).user as { userId: string; email: string }; }
 
+function isProUserPlan(user: any): boolean {
+  return String(user?.plan || "free").trim().toLowerCase() === "pro";
+}
+
 function sanitizeUserForClient(user: any) {
   const {
     password: _password,
@@ -170,7 +174,13 @@ function isThreadsMissingPostError(err: unknown): boolean {
 
 function isAcceptableDeleteError(err: unknown): boolean {
   const message = String((err as any)?.message || "").toLowerCase();
-  return message.includes("404") || message.includes("already deleted") || isThreadsMissingPostError(err);
+  return (
+    message.includes("404") ||
+    message.includes("already deleted") ||
+    message.includes("not found") ||
+    message.includes("does not exist") ||
+    message.includes("unknown media")
+  );
 }
 
 async function refreshScheduledPostInsights(
@@ -250,21 +260,14 @@ const AI_PROVIDER_CATALOG: Record<
   openai: {
     label: "ChatGPT (OpenAI)",
     envKeys: ["OPENAI_API_KEY"],
-    models: [
-      "gpt-5.2",
-      "gpt-5.2-chat-latest",
-      "gpt-5.2-pro",
-      "gpt-5-mini",
-      "gpt-5-nano",
-      "gpt-4.1",
-    ],
-    defaultModel: "gpt-5.2",
+    models: ["gpt-4o", "gpt-4o-mini"],
+    defaultModel: "gpt-4o",
   },
   anthropic: {
     label: "Claude (Anthropic)",
     envKeys: ["ANTHROPIC_API_KEY"],
-    models: ["claude-3-5-haiku-latest", "claude-3-7-sonnet-latest"],
-    defaultModel: "claude-3-5-haiku-latest",
+    models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+    defaultModel: "claude-sonnet-4-5",
   },
   gemini: {
     label: "Gemini (Google)",
@@ -1103,6 +1106,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+    if (!isProUserPlan(user)) return res.status(403).json({ error: "PRO_PLAN_REQUIRED" });
     try {
       const since = normalizeInsightsTimeParam(req.query.since);
       const until = normalizeInsightsTimeParam(req.query.until);
@@ -1159,6 +1163,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
+    if (!isProUserPlan(user)) return res.status(403).json({ error: "PRO_PLAN_REQUIRED" });
 
     const minFollowersRequired = 100;
     try {

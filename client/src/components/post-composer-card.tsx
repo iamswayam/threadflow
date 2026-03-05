@@ -4,7 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import type { LucideIcon } from "lucide-react";
-import { Calendar, Hash, Link2, Send, Sparkles, X } from "lucide-react";
+import { Calendar, Hash, Info, Link2, Send, Sparkles, X } from "lucide-react";
 import { format } from "date-fns";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,9 +13,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth-context";
+import { cn } from "@/lib/utils";
+import type { ScheduledPost } from "@shared/schema";
 
 const MAX_CHARS = 500;
 
@@ -81,7 +84,10 @@ type PostComposerCardProps = {
   mode?: "quick" | "full";
   description?: string;
   icon: LucideIcon;
+  className?: string;
   injectedDraft?: DraftPayload | null;
+  editingScheduledPost?: ScheduledPost | null;
+  onEditFinished?: () => void;
   onDraftConsumed?: () => void;
   showSchedule?: boolean;
   testIds?: TestIds;
@@ -92,7 +98,10 @@ export function PostComposerCard({
   mode = "full",
   description,
   icon: Icon,
+  className,
   injectedDraft = null,
+  editingScheduledPost = null,
+  onEditFinished,
   onDraftConsumed,
   showSchedule = true,
   testIds,
@@ -121,6 +130,15 @@ export function PostComposerCard({
   const charCount = content.length;
   const canShowMedia = mode === "full";
   const canShowSchedule = mode === "full" && showSchedule;
+  const isEditingScheduled = Boolean(editingScheduledPost);
+
+  const resetComposer = () => {
+    form.reset();
+    setShowScheduleFields(false);
+    setTopicInput(user?.defaultTopic || "");
+    setAppTags([]);
+    setAppTagInput("");
+  };
 
   useEffect(() => {
     setTopicInput(user?.defaultTopic || "");
@@ -133,6 +151,31 @@ export function PostComposerCard({
     onDraftConsumed?.();
   }, [form, injectedDraft?.id, injectedDraft?.text, onDraftConsumed]);
 
+  useEffect(() => {
+    if (!editingScheduledPost) return;
+    const parsedSchedule = new Date(editingScheduledPost.scheduledAt);
+    form.reset({
+      content: editingScheduledPost.content || "",
+      mediaUrl: editingScheduledPost.mediaUrl || "",
+      mediaType:
+        editingScheduledPost.mediaType === "IMAGE" || editingScheduledPost.mediaType === "VIDEO"
+          ? editingScheduledPost.mediaType
+          : "TEXT",
+      scheduledAt: Number.isNaN(parsedSchedule.getTime())
+        ? ""
+        : toDateTimeLocalString(parsedSchedule),
+    });
+    setTopicInput(editingScheduledPost.topicTag || user?.defaultTopic || "");
+    setAppTags(
+      (editingScheduledPost.appTag || "")
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    );
+    setAppTagInput("");
+    setShowScheduleFields(true);
+  }, [editingScheduledPost?.id, form, user?.defaultTopic]);
+
   const publishMutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/posts/publish", data),
     onSuccess: () => {
@@ -140,10 +183,7 @@ export function PostComposerCard({
         title: "Post published!",
         description: topicInput ? `Tagged as ${topicInput}` : "Your thread is now live on Threads.",
       });
-      form.reset();
-      setTopicInput(user?.defaultTopic || "");
-      setAppTags([]);
-      setAppTagInput("");
+      resetComposer();
       queryClient.invalidateQueries({ queryKey: ["/api/posts/recent"] });
       queryClient.invalidateQueries({ queryKey: ["/api/posts/scheduled"] });
     },
@@ -159,15 +199,25 @@ export function PostComposerCard({
     mutationFn: (data: any) => apiRequest("POST", "/api/posts/schedule", data),
     onSuccess: () => {
       toast({ title: "Post scheduled!", description: "Your thread will be published at the set time." });
-      form.reset();
-      setShowScheduleFields(false);
-      setTopicInput(user?.defaultTopic || "");
-      setAppTags([]);
-      setAppTagInput("");
+      resetComposer();
       queryClient.invalidateQueries({ queryKey: ["/api/posts/scheduled"] });
     },
     onError: (err: any) => {
       toast({ title: "Failed to schedule", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const updateScheduledMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: any }) =>
+      apiRequest("PATCH", `/api/posts/scheduled/${id}`, data),
+    onSuccess: () => {
+      toast({ title: "Scheduled post updated", description: "Your queued post has been updated." });
+      resetComposer();
+      onEditFinished?.();
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/scheduled"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Failed to update", description: err.message, variant: "destructive" });
     },
   });
 
@@ -200,8 +250,31 @@ export function PostComposerCard({
     });
   };
 
+  const onUpdateScheduledPost = (data: ComposeForm) => {
+    if (!editingScheduledPost?.id) return;
+    if (!data.scheduledAt) {
+      toast({
+        title: "Pick a date",
+        description: "Please select when to publish this post.",
+        variant: "destructive",
+      });
+      return;
+    }
+    updateScheduledMutation.mutate({
+      id: editingScheduledPost.id,
+      data: {
+        content: data.content,
+        mediaUrl: data.mediaUrl || null,
+        mediaType: data.mediaType,
+        topicTag: topicInput.trim() || null,
+        appTag: appTags.join(",") || null,
+        scheduledAt: new Date(data.scheduledAt).toISOString(),
+      },
+    });
+  };
+
   return (
-    <Card>
+    <Card className={cn(className)}>
       <CardHeader>
         <CardTitle className="text-base flex items-center gap-2">
           <Icon className="w-4 h-4 text-primary" />
@@ -247,8 +320,19 @@ export function PostComposerCard({
               <div className="flex items-center gap-2">
                 <Hash className="w-4 h-4 text-muted-foreground" />
                 <Label className="text-sm text-muted-foreground">Topic Tag</Label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="w-3 h-3 text-muted-foreground/50 hover:text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-xs text-xs">
+                      Topic Tag is Threads&apos; official category system. Your post will appear under this topic on Threads,
+                      making it discoverable to people browsing that category. Example: Astrology Threads, Sports, Technology.
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
                 {user?.defaultTopic && topicInput === user.defaultTopic ? (
-                  <span className="text-xs text-primary">default</span>
+                  <span className="text-xs text-[#0EA5E9]">default</span>
                 ) : null}
               </div>
               <div className="relative">
@@ -290,7 +374,7 @@ export function PostComposerCard({
                           setShowTopicSuggestions(false);
                         }}
                       >
-                        <span className="text-primary text-xs">*</span>
+                        <span className="text-[#0EA5E9] text-xs">*</span>
                         {topic}
                       </button>
                     ))}
@@ -299,7 +383,7 @@ export function PostComposerCard({
               </div>
               {topicInput ? (
                 <p className="text-xs text-muted-foreground">
-                  Post will show: <span className="text-primary">{topicInput}</span>
+                  Post will show: <span className="text-[#0EA5E9]">{topicInput}</span>
                 </p>
               ) : null}
             </div>
@@ -308,6 +392,18 @@ export function PostComposerCard({
               <label className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
                 <span className="text-xs font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP TAG</span>
                 <span className="text-xs text-muted-foreground font-normal">Personal label - not posted to Threads</span>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="w-3 h-3 text-muted-foreground/50 hover:text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-xs text-xs">
+                      APP Tag is your personal internal label — it is never posted to Threads and nobody else can see it. Use it to
+                      organize your content by theme (e.g. Saturn, Hooks, Promotion) so you can track which topics perform best in
+                      My Content.
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </label>
 
               {appTags.length > 0 ? (
@@ -429,7 +525,7 @@ export function PostComposerCard({
               </div>
             ) : null}
 
-            {canShowSchedule && showScheduleFields ? (
+            {canShowSchedule && (showScheduleFields || isEditingScheduled) ? (
               <FormField
                 control={form.control}
                 name="scheduledAt"
@@ -543,54 +639,81 @@ export function PostComposerCard({
             ) : null}
 
             <div className="flex flex-wrap items-center gap-3 pt-1">
-              <Button
-                type="button"
-                onClick={form.handleSubmit(onPostNow)}
-                disabled={publishMutation.isPending || charCount === 0}
-                data-testid={testIds?.postNowButton}
-              >
-                <Send className="w-4 h-4 mr-2" />
-                {publishMutation.isPending ? "Posting..." : "Post Now"}
-              </Button>
-
-              {canShowSchedule ? (
-                showScheduleFields ? (
+              {isEditingScheduled ? (
+                <>
                   <Button
                     type="button"
                     variant="secondary"
-                    onClick={form.handleSubmit(onSchedule)}
-                    disabled={scheduleMutation.isPending || charCount === 0 || !scheduledAtValue}
+                    onClick={form.handleSubmit(onUpdateScheduledPost)}
+                    disabled={updateScheduledMutation.isPending || charCount === 0 || !scheduledAtValue}
                     data-testid={testIds?.confirmScheduleButton}
                   >
                     <Calendar className="w-4 h-4 mr-2" />
-                    {scheduleMutation.isPending ? "Scheduling..." : "Confirm Schedule"}
+                    {updateScheduledMutation.isPending ? "Saving..." : "Save Changes"}
                   </Button>
-                ) : (
                   <Button
                     type="button"
-                    variant="secondary"
+                    variant="ghost"
                     onClick={() => {
-                      const current = form.getValues("scheduledAt");
-                      if (!current) {
-                        form.setValue("scheduledAt", toDateTimeLocalString(getSmartDefaultScheduleTime(new Date())), {
-                          shouldDirty: true,
-                          shouldTouch: true,
-                        });
-                      }
-                      setShowScheduleFields(true);
+                      resetComposer();
+                      onEditFinished?.();
                     }}
-                    disabled={charCount === 0}
-                    data-testid={testIds?.scheduleButton}
                   >
-                    <Calendar className="w-4 h-4 mr-2" />
-                    Schedule
+                    Cancel Edit
                   </Button>
-                )
-              ) : null}
+                </>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    onClick={form.handleSubmit(onPostNow)}
+                    disabled={publishMutation.isPending || charCount === 0}
+                    data-testid={testIds?.postNowButton}
+                  >
+                    <Send className="w-4 h-4 mr-2" />
+                    {publishMutation.isPending ? "Posting..." : "Post Now"}
+                  </Button>
 
-              {canShowSchedule && showScheduleFields ? (
-                <Button type="button" variant="ghost" onClick={() => setShowScheduleFields(false)}>Cancel</Button>
-              ) : null}
+                  {canShowSchedule ? (
+                    showScheduleFields ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={form.handleSubmit(onSchedule)}
+                        disabled={scheduleMutation.isPending || charCount === 0 || !scheduledAtValue}
+                        data-testid={testIds?.confirmScheduleButton}
+                      >
+                        <Calendar className="w-4 h-4 mr-2" />
+                        {scheduleMutation.isPending ? "Scheduling..." : "Confirm Schedule"}
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => {
+                          const current = form.getValues("scheduledAt");
+                          if (!current) {
+                            form.setValue("scheduledAt", toDateTimeLocalString(getSmartDefaultScheduleTime(new Date())), {
+                              shouldDirty: true,
+                              shouldTouch: true,
+                            });
+                          }
+                          setShowScheduleFields(true);
+                        }}
+                        disabled={charCount === 0}
+                        data-testid={testIds?.scheduleButton}
+                      >
+                        <Calendar className="w-4 h-4 mr-2" />
+                        Schedule
+                      </Button>
+                    )
+                  ) : null}
+
+                  {canShowSchedule && showScheduleFields ? (
+                    <Button type="button" variant="ghost" onClick={() => setShowScheduleFields(false)}>Cancel</Button>
+                  ) : null}
+                </>
+              )}
             </div>
           </form>
         </Form>

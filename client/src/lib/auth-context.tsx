@@ -4,6 +4,7 @@ import { queryClient } from "@/lib/queryClient";
 interface AuthUser {
   id: string;
   email: string;
+  plan?: "free" | "pro" | string | null;
   threadsAccessToken?: string | null;
   threadsUsername?: string | null;
   threadsProfilePicUrl?: string | null;

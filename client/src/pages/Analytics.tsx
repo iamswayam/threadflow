@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import {
   ExternalLink,
   BarChart2,
   AlertTriangle,
+  Crown,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Link } from "wouter";
@@ -383,10 +384,30 @@ function PostRow({ post, rank }: { post: AnalyticsData["posts"][0]; rank: number
 
 export default function Analytics() {
   const { user } = useAuth();
+  const [devProMode, setDevProMode] = useState(false);
   const [activeTab, setActiveTab] = useState<"performance" | "persona">("performance");
   const [chartMetric, setChartMetric] = useState<keyof PostInsights>("views");
   const [analyticsWindow, setAnalyticsWindow] = useState<AnalyticsWindow>("24h");
   const [postPerformanceLimit, setPostPerformanceLimit] = useState<PostPerformanceLimit>(10);
+  const isProPlan = devProMode || user?.plan === "pro";
+
+  useEffect(() => {
+    const syncProMode = () => {
+      try {
+        setDevProMode(localStorage.getItem("threadflow_dev_pro") === "true");
+      } catch {
+        setDevProMode(false);
+      }
+    };
+
+    syncProMode();
+    window.addEventListener("focus", syncProMode);
+    window.addEventListener("threadflow-pro-mode-change", syncProMode);
+    return () => {
+      window.removeEventListener("focus", syncProMode);
+      window.removeEventListener("threadflow-pro-mode-change", syncProMode);
+    };
+  }, []);
 
   const selectedWindow = analyticsWindowOptions.find((option) => option.value === analyticsWindow) || analyticsWindowOptions[0];
   const windowAnalyticsUrl = (() => {
@@ -405,7 +426,7 @@ export default function Analytics() {
   } = useQuery<AnalyticsData>({
     queryKey: ["/api/analytics", "base", postPerformanceLimit],
     queryFn: () => apiRequest("GET", `/api/analytics?postsLimit=${postPerformanceLimit}`),
-    enabled: !!user?.threadsAccessToken,
+    enabled: !!user?.threadsAccessToken && isProPlan,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -417,7 +438,7 @@ export default function Analytics() {
   } = useQuery<AnalyticsData>({
     queryKey: ["/api/analytics", "window", analyticsWindow],
     queryFn: () => apiRequest("GET", windowAnalyticsUrl),
-    enabled: !!user?.threadsAccessToken,
+    enabled: !!user?.threadsAccessToken && isProPlan,
     staleTime: 5 * 60 * 1000,
     placeholderData: (prev) => prev,
   });
@@ -430,7 +451,7 @@ export default function Analytics() {
   } = useQuery<PersonaData>({
     queryKey: ["/api/analytics/persona"],
     queryFn: () => apiRequest("GET", "/api/analytics/persona"),
-    enabled: !!user?.threadsAccessToken,
+    enabled: !!user?.threadsAccessToken && isProPlan,
     staleTime: 5 * 60 * 1000,
     placeholderData: (prev) => prev,
   });
@@ -447,6 +468,25 @@ export default function Analytics() {
         </div>
         <Link href="/settings">
           <Button variant="outline">Go to Settings</Button>
+        </Link>
+      </div>
+    );
+  }
+
+  if (!isProPlan) {
+    return (
+      <div className="p-6 flex flex-col items-center justify-center h-full text-center gap-4">
+        <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center">
+          <Crown className="w-6 h-6 text-amber-400" />
+        </div>
+        <div>
+          <p className="font-semibold text-foreground">Analytics is a Pro feature</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            Enable Pro from the sidebar toggle to unlock analytics.
+          </p>
+        </div>
+        <Link href="/settings">
+          <Button variant="outline">View Plan Settings</Button>
         </Link>
       </div>
     );

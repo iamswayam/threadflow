@@ -15,6 +15,7 @@ import {
   Repeat2,
   TrendingUp,
   Trash2,
+  Crown,
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -97,16 +98,52 @@ export default function MyContent() {
   const queryClient = useQueryClient();
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [confirmDeletePostId, setConfirmDeletePostId] = useState<string | null>(null);
+  const [devProMode, setDevProMode] = useState(false);
 
   const isDeletedView = selectedTag === DELETED_TAG;
+  const isProPlan = devProMode;
 
   useEffect(() => {
+    const syncProMode = () => {
+      try {
+        setDevProMode(localStorage.getItem("threadflow_dev_pro") === "true");
+      } catch {
+        setDevProMode(false);
+      }
+    };
+
+    syncProMode();
+    window.addEventListener("focus", syncProMode);
+    window.addEventListener("threadflow-pro-mode-change", syncProMode);
+    return () => {
+      window.removeEventListener("focus", syncProMode);
+      window.removeEventListener("threadflow-pro-mode-change", syncProMode);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isProPlan && selectedTag && selectedTag !== DELETED_TAG) {
+      setSelectedTag(null);
+    }
+  }, [isProPlan, selectedTag]);
+
+  useEffect(() => {
+    let cancelled = false;
     const token = localStorage.getItem("tf_token");
     void fetch("/api/posts/refresh-insights", {
       method: "POST",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
-    }).catch(() => {});
-  }, []);
+    })
+      .then((res) => {
+        if (!cancelled && res.ok) {
+          queryClient.invalidateQueries({ queryKey: ["/api/posts/my-content"] });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [queryClient]);
 
   const { data: tags = [], isLoading: loadingTags } = useQuery<string[]>({
     queryKey: ["/api/posts/tags"],
@@ -140,10 +177,55 @@ export default function MyContent() {
     enabled: !!selectedTag && selectedTag !== DELETED_TAG,
   });
 
+  const allPostsLiveInsightTargets = posts
+    .filter((post) => Boolean(post.threadsPostId))
+    .slice(0, 30);
+
+  const { data: allPostsLiveInsights = {} } = useQuery<Record<string, PostInsightMetrics>>({
+    queryKey: [
+      "/api/posts/my-content/live-insights",
+      allPostsLiveInsightTargets.map((post) => post.id).join(","),
+    ],
+    enabled: selectedTag === null && allPostsLiveInsightTargets.length > 0,
+    queryFn: async () => {
+      const results = await Promise.all(
+        allPostsLiveInsightTargets.map(async (post) => {
+          try {
+            const live = await apiRequest(
+              "GET",
+              `/api/posts/${encodeURIComponent(post.threadsPostId!)}/insights`,
+            );
+            return [
+              post.id,
+              {
+                views: toMetric(live?.views),
+                likes: toMetric(live?.likes),
+                replies: toMetric(live?.replies),
+                reposts: toMetric(live?.reposts),
+                quotes: toMetric(live?.quotes),
+              } satisfies PostInsightMetrics,
+            ] as const;
+          } catch {
+            return [post.id, {} satisfies PostInsightMetrics] as const;
+          }
+        }),
+      );
+      return Object.fromEntries(results);
+    },
+  });
+
   const deletePostMutation = useMutation({
     mutationFn: (postId: string) => apiRequest("DELETE", `/api/posts/${postId}`),
-    onSuccess: () => {
-      toast({ title: "Moved to Deleted" });
+    onSuccess: (result: any) => {
+      if (result?.deletedFromThreads === false) {
+        toast({
+          title: "Moved to Deleted",
+          description: "Could not delete from Threads. Reconnect Threads in Settings and try again.",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Moved to Deleted" });
+      }
       setConfirmDeletePostId(null);
       queryClient.invalidateQueries({ queryKey: ["/api/posts/my-content"] });
       queryClient.invalidateQueries({ queryKey: ["/api/posts/tags"] });
@@ -210,6 +292,15 @@ export default function MyContent() {
                 </Badge>
               </Button>
 
+              <div className="flex items-center gap-2 py-1.5">
+                <span className="h-px flex-1 bg-border/60" />
+                <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <Crown className="w-3 h-3 text-orange-400" />
+                  filters
+                </span>
+                <span className="h-px flex-1 bg-border/60" />
+              </div>
+
               {loadingTags ? (
                 <div className="space-y-2">
                   <Skeleton className="h-8 w-full" />
@@ -226,6 +317,13 @@ export default function MyContent() {
                     size="sm"
                     className="w-full justify-start font-normal"
                     onClick={() => {
+                      if (!isProPlan) {
+                        toast({
+                          title: "Tag filters are a Pro feature.",
+                          description: "Enable Pro from the sidebar to unlock tag filtering.",
+                        });
+                        return;
+                      }
                       setSelectedTag(tag);
                       setConfirmDeletePostId(null);
                     }}
@@ -381,7 +479,16 @@ export default function MyContent() {
               ) : (
                 <div className="space-y-3">
                   {displayPosts.map((post) => {
-                    const insights = getInsights(post);
+                    const storedInsights = getInsights(post);
+                    const liveInsights =
+                      selectedTag === null ? allPostsLiveInsights[post.id] : undefined;
+                    const insights: PostInsightMetrics = {
+                      views: liveInsights?.views ?? storedInsights.views,
+                      likes: liveInsights?.likes ?? storedInsights.likes,
+                      replies: liveInsights?.replies ?? storedInsights.replies,
+                      reposts: liveInsights?.reposts ?? storedInsights.reposts,
+                      quotes: liveInsights?.quotes ?? storedInsights.quotes,
+                    };
                     const hasInsights = Object.values(insights).some(
                       (value) => value !== undefined && value !== null,
                     );

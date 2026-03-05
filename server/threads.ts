@@ -436,12 +436,15 @@ export async function getPostInsights(token: string, postId: string): Promise<{
 }
 
 export async function deletePost(accessToken: string, postId: string): Promise<void> {
-  const response = await fetch(`${BASE_URL}/${postId}`, {
+  const response = await fetch(
+    `${BASE_URL}/${encodeURIComponent(postId)}?access_token=${encodeURIComponent(accessToken)}`,
+    {
     method: "DELETE",
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
-  });
+    },
+  );
 
   if (response.ok || response.status === 404) return;
 

@@ -1,6 +1,7 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { CheckCircle2, Clock, PenSquare, Trash2, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, PenSquare, Pencil, Trash2, XCircle } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,6 +19,7 @@ function StatusIcon({ status }: { status: string }) {
 export default function Compose() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [editingScheduledId, setEditingScheduledId] = useState<string | null>(null);
 
   const { data: scheduled = [], isLoading } = useQuery<ScheduledPost[]>({
     queryKey: ["/api/posts/scheduled"],
@@ -33,6 +35,14 @@ export default function Compose() {
 
   const pending = scheduled.filter((post) => post.status === "pending");
   const published = scheduled.filter((post) => post.status !== "pending");
+  const editingScheduledPost = pending.find((post) => post.id === editingScheduledId) || null;
+
+  useEffect(() => {
+    if (!editingScheduledId) return;
+    if (!editingScheduledPost) {
+      setEditingScheduledId(null);
+    }
+  }, [editingScheduledId, editingScheduledPost]);
 
   return (
     <div className="p-6 space-y-6 h-full overflow-y-auto">
@@ -47,6 +57,8 @@ export default function Compose() {
             title="New Thread"
             mode="full"
             icon={PenSquare}
+            editingScheduledPost={editingScheduledPost}
+            onEditFinished={() => setEditingScheduledId(null)}
             testIds={{
               topicInput: "input-compose-topic",
               textarea: "textarea-compose",
@@ -79,22 +91,44 @@ export default function Compose() {
                 </div>
               ) : (
                 pending.map((post) => (
-                  <div key={post.id} className="p-3 rounded-md border border-border space-y-2" data-testid={`card-scheduled-${post.id}`}>
+                  <div
+                    key={post.id}
+                    className={`p-3 rounded-md border space-y-2 ${
+                      editingScheduledId === post.id ? "border-primary/60 bg-primary/5" : "border-border"
+                    }`}
+                    data-testid={`card-scheduled-${post.id}`}
+                  >
                     <p className="text-sm text-foreground line-clamp-2">{post.content}</p>
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                         <StatusIcon status={post.status} />
                         <span>{format(new Date(post.scheduledAt), "MMM d, h:mm a")}</span>
                       </div>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => deleteMutation.mutate(post.id)}
-                        disabled={deleteMutation.isPending}
-                        data-testid={`button-delete-scheduled-${post.id}`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5 text-destructive" />
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => setEditingScheduledId(post.id)}
+                          disabled={deleteMutation.isPending}
+                          data-testid={`button-edit-scheduled-${post.id}`}
+                        >
+                          <Pencil className="w-3.5 h-3.5 text-primary" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => {
+                            if (editingScheduledId === post.id) {
+                              setEditingScheduledId(null);
+                            }
+                            deleteMutation.mutate(post.id);
+                          }}
+                          disabled={deleteMutation.isPending}
+                          data-testid={`button-delete-scheduled-${post.id}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-destructive" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ))
