@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +11,7 @@ import { Link } from "wouter";
 import {
   Clock, Layers, CheckCircle2, Timer, MessageSquare, ArrowRight,
   PenSquare, Zap, TrendingUp, BarChart2, Repeat2,
-  Quote, Link2, ExternalLink, Sparkles, WandSparkles, Users, AlertCircle, Eye,
+  Quote, Link2, ExternalLink, Sparkles, WandSparkles, Users, AlertCircle, Eye, Crown,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
@@ -223,7 +223,7 @@ function ProfileCard() {
             <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{displayProfile.threads_biography}</p>
           )}
           {user?.defaultTopic && (
-            <p className="text-xs text-primary mt-0.5">✦ {user.defaultTopic} (default topic)</p>
+            <p className="text-xs text-primary mt-0.5">âœ¦ {user.defaultTopic} (default topic)</p>
           )}
         </div>
         <div className="flex items-center gap-4 ml-auto flex-shrink-0">
@@ -420,7 +420,7 @@ function AiPostAssistant({
         <div className="h-[170px] overflow-y-auto rounded-md border border-border bg-muted/20 p-2 space-y-2">
           {showDailyLimitPrompt && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 space-y-2">
-              <p className="text-xs font-medium text-destructive">✦ Daily limit reached</p>
+              <p className="text-xs font-medium text-destructive">âœ¦ Daily limit reached</p>
               <p className="text-xs text-muted-foreground">
                 You've used all 10 free AI requests today. Resets at midnight.
               </p>
@@ -459,9 +459,9 @@ function AiPostAssistant({
         {usage && (
           <div className="flex justify-end">
             {usage.plan === "pro" ? (
-              <span className="text-xs text-orange-400">✦ Pro · Unlimited</span>
+              <span className="text-xs text-orange-400">âœ¦ Pro Â· Unlimited</span>
             ) : usage.unlimited ? (
-              <span className="text-xs text-muted-foreground">✦ Own key · Unlimited</span>
+              <span className="text-xs text-muted-foreground">âœ¦ Own key Â· Unlimited</span>
             ) : (
               <span
                 className={`text-xs ${
@@ -472,7 +472,7 @@ function AiPostAssistant({
                       : "text-muted-foreground"
                 }`}
               >
-                ✦ {usage.used} / {usage.limit} today
+                âœ¦ {usage.used} / {usage.limit} today
               </span>
             )}
           </div>
@@ -703,18 +703,43 @@ function RecentPosts() {
     </Card>
   );
 }
-// ─── Main Dashboard ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function Dashboard() {
+  const { toast } = useToast();
   const [quickComposeDraft, setQuickComposeDraft] = useState<QuickComposeDraft | null>(null);
+  const [devProMode, setDevProMode] = useState(false);
   const { data: scheduledPosts = [], isLoading: loadingScheduled } = useQuery<ScheduledPost[]>({ queryKey: ["/api/posts/scheduled"] });
   const { data: bulkQueues = [], isLoading: loadingBulk } = useQuery<BulkQueueWithItems[]>({ queryKey: ["/api/bulk-queues"] });
   const { data: followUps = [], isLoading: loadingFollowUps } = useQuery<FollowUpThread[]>({ queryKey: ["/api/follow-ups"] });
+  const { data: usage } = useQuery<AiUsage>({
+    queryKey: ["/api/ai/usage"],
+    queryFn: () => apiRequest("GET", "/api/ai/usage"),
+  });
+
+  useEffect(() => {
+    const syncProMode = () => {
+      try {
+        setDevProMode(localStorage.getItem("threadflow_dev_pro") === "true");
+      } catch {
+        setDevProMode(false);
+      }
+    };
+
+    syncProMode();
+    window.addEventListener("focus", syncProMode);
+    window.addEventListener("threadflow-pro-mode-change", syncProMode);
+    return () => {
+      window.removeEventListener("focus", syncProMode);
+      window.removeEventListener("threadflow-pro-mode-change", syncProMode);
+    };
+  }, []);
 
   const pendingScheduled = scheduledPosts.filter(p => p.status === "pending");
   const publishedPosts = scheduledPosts.filter(p => p.status === "published");
   const lastPublished = publishedPosts.sort((a, b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime())[0];
   const runningQueues = bulkQueues.filter(q => q.status === "running");
   const pendingFollowUps = followUps.filter(f => f.status === "pending");
+  const isProPlan = devProMode;
 
   const stats = [
     { title: "Scheduled Posts", value: pendingScheduled.length, icon: Clock, description: lastPublished ? `Last: ${formatDistanceToNow(new Date(lastPublished.scheduledAt), { addSuffix: true })}` : "No posts yet", color: "text-chart-1", bg: "bg-chart-1/10" },
@@ -724,7 +749,7 @@ export default function Dashboard() {
   ];
 
   const quickActions = [
-    { label: "Thread Chain", href: "/chain", icon: Link2, desc: "Post a series instantly" },
+    { label: "Thread Chain", href: "/chain", icon: Link2, desc: "Post a series instantly", proOnly: true },
     { label: "Bulk Post", href: "/bulk", icon: Layers, desc: "Multiple posts in sequence" },
     { label: "Analytics", href: "/analytics", icon: BarChart2, desc: "View performance insights" },
     { label: "Follow-Up", href: "/followup", icon: Timer, desc: "Schedule a timed reply" },
@@ -797,28 +822,57 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-3">
             {quickActions.map((action, index) => (
-              <Link 
-                key={action.href} 
-                href={action.href}
-                className={index === quickActions.length - 1 && quickActions.length % 2 !== 0 ? "col-span-2" : ""}
-              >
-                <div className="flex flex-col gap-2 p-3 rounded-md border border-border hover-elevate cursor-pointer group">
-                  <div className="flex items-center justify-center w-8 h-8 rounded-md bg-primary/10 group-hover:bg-primary/20 transition-colors">
-                    <action.icon className="w-4 h-4 text-primary" />
+              (() => {
+                const isProOnlyLocked = !!(action as any).proOnly && !isProPlan;
+                const sharedClass = index === quickActions.length - 1 && quickActions.length % 2 !== 0 ? "col-span-2" : "";
+                const actionCard = (
+                  <div
+                    className="relative flex flex-col gap-2 p-3 rounded-md border border-border hover-elevate cursor-pointer group"
+                  >
+                    {(action as any).proOnly && (
+                      <Crown className="absolute top-2 right-2 w-3.5 h-3.5 text-orange-400" />
+                    )}
+                    <div className="flex items-center justify-center w-8 h-8 rounded-md bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                      <action.icon className="w-4 h-4 text-primary" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{action.label}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{action.desc}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium text-foreground">{action.label}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">{action.desc}</p>
-                  </div>
-                </div>
-              </Link>
+                );
+
+                if (isProOnlyLocked) {
+                  return (
+                    <button
+                      key={action.href}
+                      type="button"
+                      className={`${sharedClass} text-left`}
+                      onClick={() =>
+                        toast({
+                          title: "Feature available in Pro",
+                          description: "Thread Chain is available on Pro. Turn on Pro from the sidebar to unlock it.",
+                        })
+                      }
+                    >
+                      {actionCard}
+                    </button>
+                  );
+                }
+
+                return (
+                  <Link key={action.href} href={action.href} className={`${sharedClass} text-left`}>
+                    {actionCard}
+                  </Link>
+                );
+              })()
             ))}
           </CardContent>
         </Card>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* ✅ Recent posts with repost/quote */}
+        {/* âœ… Recent posts with repost/quote */}
         <RecentPosts />
 
         <Card>
@@ -872,6 +926,7 @@ export default function Dashboard() {
     </div>
   );
 }
+
 
 
 

@@ -46,6 +46,7 @@ export function AppSidebar() {
 
     try {
       localStorage.setItem("threadflow_dev_pro", String(devProMode));
+      window.dispatchEvent(new Event("threadflow-pro-mode-change"));
     } catch {
       // Ignore storage failures.
     }
