@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -56,6 +56,7 @@ export default function Settings() {
   const [, setLocation] = useLocation();
 
   const [connectLoading, setConnectLoading] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [topicInput, setTopicInput] = useState(user?.defaultTopic || "");
   const [topicLoading, setTopicLoading] = useState(false);
@@ -64,6 +65,31 @@ export default function Settings() {
   const filteredTopics = POPULAR_TOPICS.filter(t =>
     t.toLowerCase().includes(topicInput.toLowerCase()) && t !== topicInput
   );
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauth = params.get("oauth");
+    const error = params.get("error");
+    if (!oauth && !error) return;
+
+    if (oauth === "success") {
+      toast({ title: "Threads connected successfully!" });
+      void refreshUser();
+      void qc.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      void qc.invalidateQueries({ queryKey: ["/api/profile"] });
+    } else if (error === "oauth_state_invalid") {
+      toast({ title: "Connection failed — please try again", variant: "destructive" });
+    } else if (error === "oauth_token_failed") {
+      toast({
+        title: "Could not get access token from Threads — check your App ID and App Secret",
+        variant: "destructive",
+      });
+    } else if (error === "oauth_failed") {
+      toast({ title: "Connection failed — please try again", variant: "destructive" });
+    }
+
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }, [qc, refreshUser, toast]);
 
   const connectForm = useForm<ConnectForm>({
     resolver: zodResolver(connectSchema),
@@ -78,6 +104,27 @@ export default function Settings() {
     resolver: zodResolver(passwordSchema),
     defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" },
   });
+
+  const onOauthConnect = async () => {
+    setOauthLoading(true);
+    try {
+      const response = await apiRequest("GET", "/api/auth/threads/connect");
+      if (response?.url) {
+        window.location.href = response.url;
+        return;
+      }
+      toast({
+        title: "Failed to connect",
+        description: response?.error || "Could not start Threads OAuth flow",
+        variant: "destructive",
+      });
+    } catch (err: any) {
+      const msg = err.message?.includes(":") ? err.message.split(":").slice(1).join(":").trim() : err.message;
+      toast({ title: "Failed to connect", description: msg, variant: "destructive" });
+    } finally {
+      setOauthLoading(false);
+    }
+  };
 
   const onConnect = async (data: ConnectForm) => {
     setConnectLoading(true);
@@ -173,6 +220,19 @@ export default function Settings() {
                   Disconnect
                 </Button>
               )}
+            </div>
+            <div className="mb-4 space-y-3">
+              <Button
+                type="button"
+                className="w-full"
+                onClick={onOauthConnect}
+                disabled={oauthLoading}
+                data-testid="button-connect-threads-oauth"
+              >
+                <Link2 className="w-4 h-4 mr-2" />
+                {oauthLoading ? "Redirecting..." : "Connect with Threads"}
+              </Button>
+              <div className="text-xs text-center text-muted-foreground">─── or connect manually ───</div>
             </div>
             <Form {...connectForm}>
               <form onSubmit={connectForm.handleSubmit(onConnect)} className="space-y-4">

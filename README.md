@@ -239,6 +239,8 @@ Once connected you'll see:
 | **Persona eligibility** | Audience Persona requires at least 100 followers |
 | **Topic tags** | Set a default in Settings — override per post in Compose, Bulk Post, or Thread Chain |
 | **Pinning** | Threads API does not support pinning — pin manually in the Threads app |
+| **OAuth redirect URI** | Set THREADS_REDIRECT_URI in .env. For local dev use http://localhost:5000/api/auth/threads/callback. For production use your live domain. |
+| **OAuth in Dev Mode** | OAuth only works for accounts added as Testers until Meta approves your app for Live Mode |
 
 ---
 

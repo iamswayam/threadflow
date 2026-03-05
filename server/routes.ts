@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import * as threads from "./threads";
-import { requireAuth, hashPassword, verifyPassword, signToken } from "./auth";
+import { requireAuth, hashPassword, verifyPassword, signToken, verifyToken } from "./auth";
 
 /*
  * =====================================================
@@ -628,6 +628,111 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       threadsProfilePicUrl: undefined, threadsFollowerCount: undefined,
     });
     res.json({ success: true });
+  });
+
+  app.get("/api/auth/threads/connect", requireAuth, async (req, res) => {
+    const appId = process.env.THREADS_APP_ID;
+    const redirectUri = process.env.THREADS_REDIRECT_URI;
+    if (!appId || !redirectUri) {
+      return res
+        .status(400)
+        .json({ error: "THREADS_APP_ID and THREADS_REDIRECT_URI must be set in environment" });
+    }
+
+    const authHeader = req.headers.authorization;
+    const state = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    if (!state) return res.status(401).json({ error: "UNAUTHORIZED" });
+
+    const params = new URLSearchParams({
+      client_id: appId,
+      redirect_uri: redirectUri,
+      scope: [
+        "threads_basic",
+        "threads_content_publish",
+        "threads_manage_replies",
+        "threads_read_replies",
+        "threads_manage_insights",
+      ].join(","),
+      response_type: "code",
+      state,
+    });
+    res.json({ url: `https://threads.net/oauth/authorize?${params.toString()}` });
+  });
+
+  app.get("/api/auth/threads/callback", async (req, res) => {
+    const code = typeof req.query.code === "string" ? req.query.code : undefined;
+    const state = typeof req.query.state === "string" ? req.query.state : undefined;
+
+    if (!code) return res.status(400).json({ error: "code param required" });
+
+    const jwtPayload = state ? verifyToken(state) : null;
+    if (!jwtPayload?.userId) return res.redirect("/settings?error=oauth_state_invalid");
+
+    const appId = process.env.THREADS_APP_ID;
+    const appSecret = process.env.THREADS_APP_SECRET;
+    const redirectUri = process.env.THREADS_REDIRECT_URI;
+    if (!appId || !appSecret || !redirectUri) return res.redirect("/settings?error=oauth_failed");
+
+    try {
+      const shortTokenResponse = await fetch("https://graph.threads.net/oauth/access_token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: appId,
+          client_secret: appSecret,
+          code,
+          redirect_uri: redirectUri,
+          grant_type: "authorization_code",
+        }).toString(),
+      });
+
+      if (!shortTokenResponse.ok) return res.redirect("/settings?error=oauth_token_failed");
+
+      const shortTokenPayload = (await shortTokenResponse.json().catch(() => null)) as
+        | { access_token?: string }
+        | null;
+      const shortLivedToken = shortTokenPayload?.access_token;
+      if (!shortLivedToken) return res.redirect("/settings?error=oauth_token_failed");
+
+      let finalAccessToken = shortLivedToken;
+      try {
+        const exchangeParams = new URLSearchParams({
+          grant_type: "th_exchange_token",
+          client_id: appId,
+          client_secret: appSecret,
+          access_token: shortLivedToken,
+        });
+        const longTokenResponse = await fetch(
+          `https://graph.threads.net/access_token?${exchangeParams.toString()}`,
+        );
+        if (longTokenResponse.ok) {
+          const longTokenPayload = (await longTokenResponse.json().catch(() => null)) as
+            | { access_token?: string }
+            | null;
+          if (longTokenPayload?.access_token) {
+            finalAccessToken = longTokenPayload.access_token;
+          }
+        }
+      } catch {
+        // Fallback to short-lived token when exchange fails.
+      }
+
+      const profile = await threads.getProfile(finalAccessToken);
+      const followersCount = await threads.getFollowersCount(finalAccessToken, profile.id);
+
+      await storage.updateUserThreadsCredentials(jwtPayload.userId, {
+        threadsAppId: appId,
+        threadsAppSecret: appSecret,
+        threadsAccessToken: finalAccessToken,
+        threadsUsername: profile.username,
+        threadsProfilePicUrl: profile.threads_profile_picture_url,
+        threadsFollowerCount: followersCount,
+      });
+
+      return res.redirect("/settings?oauth=success");
+    } catch {
+      return res.redirect("/settings?error=oauth_failed");
+    }
   });
 
   // â”€â”€ Profile & Posts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
