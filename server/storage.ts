@@ -31,6 +31,13 @@ export interface IStorage {
     aiGoogleApiKey?: string | null;
     aiPerplexityApiKey?: string | null;
   }): Promise<User>;
+  incrementAiUsage(userId: string): Promise<number>;
+  getUserAiUsage(userId: string): Promise<{
+    plan: string;
+    aiRequestsToday: number;
+    aiRequestsResetAt: Date | null;
+  }>;
+  setUserPlan(userId: string, plan: "free" | "pro"): Promise<void>;
   updateUserPassword(userId: string, password: string): Promise<void>;
   updateUserDefaultTopic(userId: string, topic: string | null): Promise<User>;
   deleteUser(userId: string): Promise<void>;
@@ -71,6 +78,14 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  private isSameUtcDay(a: Date, b: Date): boolean {
+    return (
+      a.getUTCFullYear() === b.getUTCFullYear() &&
+      a.getUTCMonth() === b.getUTCMonth() &&
+      a.getUTCDate() === b.getUTCDate()
+    );
+  }
+
   async createUser(data: { email: string; password: string }): Promise<User> {
     const [user] = await db.insert(users).values(data).returning();
     return user;
@@ -95,6 +110,48 @@ export class DatabaseStorage implements IStorage {
   }): Promise<User> {
     const [user] = await db.update(users).set(data).where(eq(users.id, userId)).returning();
     return user;
+  }
+  async incrementAiUsage(userId: string): Promise<number> {
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error("User not found");
+
+    const now = new Date();
+    const needsReset =
+      !user.aiRequestsResetAt || !this.isSameUtcDay(user.aiRequestsResetAt, now);
+
+    const currentCount = needsReset ? 0 : Number(user.aiRequestsToday || 0);
+    const nextCount = currentCount + 1;
+
+    const [updated] = await db
+      .update(users)
+      .set({
+        aiRequestsToday: nextCount,
+        aiRequestsResetAt: now,
+      })
+      .where(eq(users.id, userId))
+      .returning({ aiRequestsToday: users.aiRequestsToday });
+
+    return updated?.aiRequestsToday ?? nextCount;
+  }
+  async getUserAiUsage(userId: string): Promise<{
+    plan: string;
+    aiRequestsToday: number;
+    aiRequestsResetAt: Date | null;
+  }> {
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error("User not found");
+
+    return {
+      plan: user.plan || "free",
+      aiRequestsToday: Number(user.aiRequestsToday || 0),
+      aiRequestsResetAt: user.aiRequestsResetAt ?? null,
+    };
+  }
+  async setUserPlan(userId: string, plan: "free" | "pro"): Promise<void> {
+    if (plan !== "free" && plan !== "pro") {
+      throw new Error("Invalid plan");
+    }
+    await db.update(users).set({ plan }).where(eq(users.id, userId));
   }
   async updateUserPassword(userId: string, password: string): Promise<void> {
     await db.update(users).set({ password }).where(eq(users.id, userId));

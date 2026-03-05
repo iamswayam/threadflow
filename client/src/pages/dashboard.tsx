@@ -38,6 +38,13 @@ type AiProviderOption = {
   models: string[];
 };
 
+type AiUsage = {
+  plan: string;
+  used: number;
+  limit: number;
+  unlimited: boolean;
+};
+
 type AiKeyStatus = {
   openaiConfigured: boolean;
   anthropicConfigured: boolean;
@@ -94,6 +101,19 @@ function getFriendlyAiError(err: unknown): string {
   }
 
   return message || fallback;
+}
+
+function parseApiErrorPayload(err: unknown): Record<string, any> | null {
+  const rawMessage = typeof (err as any)?.message === "string" ? (err as any).message : "";
+  if (!rawMessage) return null;
+  const cleaned = rawMessage.replace(/^\d+\s*:\s*/, "").trim();
+  if (!cleaned.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(cleaned);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -233,11 +253,21 @@ function AiPostAssistant({
   const [prompt, setPrompt] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
+  const [usage, setUsage] = useState<AiUsage | null>(null);
+  const [showDailyLimitPrompt, setShowDailyLimitPrompt] = useState(false);
 
   const { data: providers = [], isLoading: loadingProviders } = useQuery<AiProviderOption[]>({
     queryKey: ["/api/ai/providers"],
     queryFn: () => apiRequest("GET", "/api/ai/providers"),
   });
+  const { data: usageData } = useQuery<AiUsage>({
+    queryKey: ["/api/ai/usage"],
+    queryFn: () => apiRequest("GET", "/api/ai/usage"),
+  });
+
+  useEffect(() => {
+    if (usageData) setUsage(usageData);
+  }, [usageData]);
 
   useEffect(() => {
     if (!providers.length) {
@@ -284,13 +314,27 @@ function AiPostAssistant({
     const userMessage: AiChatMessage = { id: Date.now(), role: "user", content: message };
     setMessages((prev) => [...prev, userMessage]);
     setPrompt("");
+    setShowDailyLimitPrompt(false);
 
     try {
       const result = await askAi({ provider, model, message, history });
       const reply = typeof result?.reply === "string" ? result.reply.trim() : "";
       if (!reply) throw new Error("Empty response from AI");
       setMessages((prev) => [...prev, { id: Date.now() + 1, role: "assistant", content: reply }]);
+      setUsage((prev) =>
+        prev && !prev.unlimited
+          ? { ...prev, used: Math.min(prev.limit, prev.used + 1) }
+          : prev,
+      );
     } catch (err: any) {
+      const apiError = parseApiErrorPayload(err);
+      if (apiError?.error === "DAILY_LIMIT_REACHED") {
+        setShowDailyLimitPrompt(true);
+        setUsage((prev) =>
+          prev && !prev.unlimited ? { ...prev, used: Math.max(prev.used, prev.limit) } : prev,
+        );
+        return;
+      }
       const msg = getFriendlyAiError(err);
       toast({ title: "AI request failed", description: msg, variant: "destructive" });
       setMessages((prev) => [...prev, { id: Date.now() + 1, role: "assistant", content: "I could not generate right now. Please try again." }]);
@@ -366,6 +410,17 @@ function AiPostAssistant({
         </div>
 
         <div className="h-[170px] overflow-y-auto rounded-md border border-border bg-muted/20 p-2 space-y-2">
+          {showDailyLimitPrompt && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 space-y-2">
+              <p className="text-xs font-medium text-destructive">✦ Daily limit reached</p>
+              <p className="text-xs text-muted-foreground">
+                You've used all 10 free AI requests today. Resets at midnight.
+              </p>
+              <Link href="/settings">
+                <Button type="button" size="sm">Upgrade to Pro -&gt;</Button>
+              </Link>
+            </div>
+          )}
           {messages.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               Ask for post drafts, thread ideas, CTA variants, hashtag sets, or tone rewrites.
@@ -392,6 +447,22 @@ function AiPostAssistant({
             ))
           )}
         </div>
+
+        {usage && !usage.unlimited && (
+          <div className="flex justify-end">
+            <span
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                usage.used >= usage.limit
+                  ? "border-destructive/40 text-destructive bg-destructive/10"
+                  : usage.used >= 8
+                    ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
+                    : "border-border text-muted-foreground bg-muted/30"
+              }`}
+            >
+              ✦ {usage.used} / {usage.limit} AI requests today
+            </span>
+          </div>
+        )}
 
         <Textarea
           rows={2}

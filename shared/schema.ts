@@ -17,6 +17,9 @@ export const users = pgTable("users", {
   aiAnthropicApiKey: text("ai_anthropic_api_key"),
   aiGoogleApiKey: text("ai_google_api_key"),
   aiPerplexityApiKey: text("ai_perplexity_api_key"),
+  plan: text("plan").notNull().default("free"),
+  aiRequestsToday: integer("ai_requests_today").notNull().default(0),
+  aiRequestsResetAt: timestamp("ai_requests_reset_at"),
   defaultTopic: text("default_topic"), // NEW: saved default topic tag
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });

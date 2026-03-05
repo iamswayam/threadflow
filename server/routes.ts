@@ -241,6 +241,7 @@ type AiHistoryMessage = { role: AiRole; content: string };
 const AI_SYSTEM_PROMPT =
   "You are a social media writing assistant for Threads. Provide concise, clear, high-engagement drafts. " +
   "When relevant, include 3-5 variants and keep each variant ready to post.";
+const FREE_DAILY_AI_LIMIT = 10;
 
 const AI_PROVIDER_CATALOG: Record<
   AiProvider,
@@ -315,6 +316,24 @@ function getConfiguredAiProviders(user?: any): Array<{ provider: AiProvider; lab
       models: AI_PROVIDER_CATALOG[provider].models,
       defaultModel: AI_PROVIDER_CATALOG[provider].defaultModel,
     }));
+}
+
+function hasAnyUserProvidedAiKey(user: any): boolean {
+  return (Object.keys(AI_PROVIDER_CATALOG) as AiProvider[]).some(
+    (provider) => !!getUserProviderApiKey(user, provider),
+  );
+}
+
+function isSameUtcDay(a: Date, b: Date): boolean {
+  return (
+    a.getUTCFullYear() === b.getUTCFullYear() &&
+    a.getUTCMonth() === b.getUTCMonth() &&
+    a.getUTCDate() === b.getUTCDate()
+  );
+}
+
+function getNextUtcMidnight(now = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
 }
 
 function sanitizeAiHistory(input: unknown): AiHistoryMessage[] {
@@ -783,6 +802,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(providers);
   });
 
+  app.get("/api/ai/usage", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const usage = await storage.getUserAiUsage(userId);
+    const now = new Date();
+    const used =
+      usage.aiRequestsResetAt && isSameUtcDay(usage.aiRequestsResetAt, now)
+        ? usage.aiRequestsToday
+        : 0;
+    const plan = usage.plan === "pro" ? "pro" : "free";
+    const unlimited = plan === "pro" || hasAnyUserProvidedAiKey(user);
+
+    res.json({
+      plan,
+      used,
+      limit: FREE_DAILY_AI_LIMIT,
+      unlimited,
+    });
+  });
+
+  app.patch("/api/admin/set-plan", requireAuth, async (req, res) => {
+    const requester = getUser(req);
+    const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+    if (!adminEmail || requester.email.toLowerCase() !== adminEmail) {
+      return res.status(403).json({ error: "FORBIDDEN" });
+    }
+
+    const targetEmail = typeof req.body?.targetEmail === "string" ? req.body.targetEmail.trim() : "";
+    const rawPlan = typeof req.body?.plan === "string" ? req.body.plan.trim().toLowerCase() : "";
+    const plan = rawPlan === "free" || rawPlan === "pro" ? rawPlan : null;
+    if (!targetEmail || !plan) {
+      return res.status(400).json({ error: "targetEmail and valid plan are required" });
+    }
+
+    const targetUser = await storage.getUserByEmail(targetEmail);
+    if (!targetUser) return res.status(404).json({ error: "Target user not found" });
+
+    await storage.setUserPlan(targetUser.id, plan);
+    res.json({ success: true });
+  });
+
   app.get("/api/ai/keys", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
@@ -860,9 +922,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (message.length > 4000) return res.status(400).json({ error: "Message too long (max 4000 chars)" });
 
     const catalog = AI_PROVIDER_CATALOG[provider];
-    const configuredKey = getEffectiveProviderApiKey(user, provider);
+    const userProviderApiKey = getUserProviderApiKey(user, provider);
+    const configuredKey = userProviderApiKey || getEnvKeyValue(catalog.envKeys);
     if (!configuredKey) {
       return res.status(400).json({ error: `${provider} is not configured. Add key in Dashboard or server env.` });
+    }
+    const usingServerKey = !userProviderApiKey;
+
+    if (usingServerKey) {
+      const usage = await storage.getUserAiUsage(userId);
+      const now = new Date();
+      const used =
+        usage.aiRequestsResetAt && isSameUtcDay(usage.aiRequestsResetAt, now)
+          ? usage.aiRequestsToday
+          : 0;
+      const plan = usage.plan === "pro" ? "pro" : "free";
+      if (plan !== "pro" && used >= FREE_DAILY_AI_LIMIT) {
+        return res.status(429).json({
+          error: "DAILY_LIMIT_REACHED",
+          message: "You've used all 10 free AI requests today. Upgrade to Pro for unlimited access.",
+          limit: FREE_DAILY_AI_LIMIT,
+          used,
+          resetsAt: getNextUtcMidnight(now).toISOString(),
+        });
+      }
     }
 
     const requestedModel = typeof req.body?.model === "string" ? req.body.model : "";
@@ -884,6 +967,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const normalizedReply = reply?.trim();
       if (!normalizedReply) {
         return res.status(502).json({ error: "Provider returned empty response" });
+      }
+
+      if (usingServerKey) {
+        await storage.incrementAiUsage(userId);
       }
 
       res.json({ provider, model, reply: normalizedReply });
