@@ -1,22 +1,22 @@
 import { useEffect, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Link } from "wouter";
 import {
   Clock, Layers, CheckCircle2, Timer, MessageSquare, ArrowRight,
-  PenSquare, Send, Zap, TrendingUp, Hash, X, BarChart2, Repeat2,
-  Quote, Link2, ExternalLink, Sparkles, WandSparkles, Users, AlertCircle,
+  PenSquare, Zap, TrendingUp, BarChart2, Repeat2,
+  Quote, Link2, ExternalLink, Sparkles, WandSparkles, Users, AlertCircle, Eye,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { PostComposerCard } from "@/components/post-composer-card";
 import type { ScheduledPost, BulkQueueWithItems, FollowUpThread } from "@shared/schema";
 import { formatDistanceToNow, format } from "date-fns";
 
@@ -27,7 +27,7 @@ type AiChatMessage = {
   content: string;
 };
 
-type QuickPostDraft = {
+type QuickComposeDraft = {
   id: number;
   text: string;
 };
@@ -95,14 +95,6 @@ function getFriendlyAiError(err: unknown): string {
 
   return message || fallback;
 }
-
-const POPULAR_TOPICS = [
-  "Astrology Threads", "Motivation Threads", "Business Threads",
-  "Health Threads", "Fitness Threads", "Tech Threads", "AI Threads",
-  "Spirituality Threads", "Mindset Threads", "Writing Threads",
-  "Finance Threads", "Education Threads", "Daily Life Threads",
-  "Crypto Threads", "Travel Threads", "Food Threads", "Music Threads",
-];
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
@@ -230,204 +222,7 @@ function ProfileCard() {
   );
 }
 
-// ─── Quick Post with topic ABOVE textarea ────────────────────────────────────
-function QuickPost({
-  injectedDraft,
-}: {
-  injectedDraft: QuickPostDraft | null;
-}) {
-  const [content, setContent] = useState("");
-  const [topicInput, setTopicInput] = useState("");
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [appTags, setAppTags] = useState<string[]>([]);
-  const [appTagInput, setAppTagInput] = useState("");
-  const { toast } = useToast();
-  const { user } = useAuth();
-
-  useEffect(() => {
-    setTopicInput(user?.defaultTopic || "");
-  }, [user?.defaultTopic]);
-
-  useEffect(() => {
-    if (!injectedDraft?.text) return;
-    setContent(injectedDraft.text);
-    setShowSuggestions(false);
-  }, [injectedDraft?.id, injectedDraft?.text]);
-
-  const filteredTopics = POPULAR_TOPICS.filter(t =>
-    t.toLowerCase().includes(topicInput.toLowerCase()) && t !== topicInput
-  );
-
-  const { mutate: publish, isPending } = useMutation({
-    mutationFn: (data: { content: string; topicTag?: string; appTag?: string }) =>
-      apiRequest("POST", "/api/posts/publish", data),
-    onSuccess: () => {
-      const details: string[] = [];
-      if (topicInput) details.push(`Topic ${topicInput}`);
-      toast({ title: "Posted!", description: details.length ? details.join(" | ") : "Thread published!" });
-      setContent("");
-      setTopicInput(user?.defaultTopic || "");
-      setAppTags([]);
-      setAppTagInput("");
-    },
-    onError: (err: any) => {
-      const msg = err.message?.includes(":") ? err.message.split(":").slice(1).join(":").trim() : err.message;
-      toast({ title: "Failed to post", description: msg, variant: "destructive" });
-    },
-  });
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base flex items-center gap-2">
-          <Zap className="w-4 h-4 text-primary" />
-          Quick Post
-        </CardTitle>
-        <CardDescription className="text-xs">Post directly to Threads right now</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2.5">
-
-        {/* ✅ Topic dropdown ABOVE the post box */}
-        <div className="relative">
-          <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/30 focus-within:border-primary/50 transition-colors">
-            <Hash className="w-3.5 h-3.5 text-primary flex-shrink-0" />
-            <input
-              className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
-              placeholder={user?.defaultTopic ? `✦ ${user.defaultTopic}` : "Add topic (optional)"}
-              value={topicInput}
-              onChange={e => { setTopicInput(e.target.value); setShowSuggestions(true); }}
-              onFocus={() => setShowSuggestions(true)}
-              disabled={!user?.threadsAccessToken}
-              data-testid="input-quick-post-topic"
-            />
-            {topicInput && (
-              <button onClick={() => { setTopicInput(""); setShowSuggestions(false); }} className="text-muted-foreground hover:text-foreground">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          {/* Suggestions dropdown */}
-          {showSuggestions && filteredTopics.length > 0 && (
-            <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-popover border border-border rounded-md shadow-lg max-h-36 overflow-y-auto">
-              {filteredTopics.slice(0, 6).map(topic => (
-                <button
-                  key={topic}
-                  className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors flex items-center gap-2"
-                  onMouseDown={e => { e.preventDefault(); setTopicInput(topic); setShowSuggestions(false); }}
-                >
-                  <span className="text-primary text-xs font-medium">✦</span>
-                  {topic}
-                </button>
-              ))}
-            </div>
-          )}
-
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
-            <span className="text-xs font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP TAG</span>
-            <span className="text-xs text-muted-foreground font-normal">Personal label - not posted to Threads</span>
-          </label>
-
-          {appTags.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-1.5">
-              {appTags.map(tag => (
-                <span
-                  key={tag}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
-                >
-                  {tag}
-                  <button
-                    type="button"
-                    onClick={() => setAppTags(prev => prev.filter(t => t !== tag))}
-                    className="ml-0.5 hover:text-destructive transition-colors"
-                  >
-                    &times;
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          {appTags.length < 5 && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/20 focus-within:border-primary/50 transition-colors">
-              <input
-                className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
-                placeholder="Add a personal tag"
-                value={appTagInput}
-                onChange={e => setAppTagInput(e.target.value)}
-                onKeyDown={e => {
-                  if ((e.key === "Enter" || e.key === ",") && appTagInput.trim()) {
-                    e.preventDefault();
-                    const newTag = appTagInput.trim().charAt(0).toUpperCase() + appTagInput.trim().slice(1);
-                    if (!appTags.includes(newTag) && appTags.length < 5) {
-                      setAppTags(prev => [...prev, newTag]);
-                    }
-                    setAppTagInput("");
-                  }
-                  if (e.key === "Backspace" && !appTagInput && appTags.length > 0) {
-                    setAppTags(prev => prev.slice(0, -1));
-                  }
-                }}
-                maxLength={60}
-                disabled={!user?.threadsAccessToken}
-              />
-              {appTagInput.trim() && (
-                <button
-                  type="button"
-                  className="text-xs text-primary hover:text-primary/80 font-medium"
-                  onClick={() => {
-                    const newTag = appTagInput.trim().charAt(0).toUpperCase() + appTagInput.trim().slice(1);
-                    if (!appTags.includes(newTag) && appTags.length < 5) {
-                      setAppTags(prev => [...prev, newTag]);
-                    }
-                    setAppTagInput("");
-                  }}
-                >
-                  Add
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Post textarea */}
-        <Textarea
-          placeholder={user?.threadsAccessToken ? "What's on your mind?" : "Connect your Threads account to post..."}
-          value={content}
-          onChange={e => setContent(e.target.value)}
-          onFocus={() => setShowSuggestions(false)}
-          disabled={!user?.threadsAccessToken}
-          rows={2}
-          maxLength={500}
-          data-testid="textarea-quick-post"
-          className="resize-none min-h-[82px]"
-        />
-
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">{content.length}/500</span>
-          <Button
-            size="sm"
-            disabled={!content.trim() || isPending || !user?.threadsAccessToken}
-            onClick={() => publish({
-              content: content.trim(),
-              topicTag: topicInput.trim() || undefined,
-              appTag: appTags.join(",") || undefined,
-            })}
-            data-testid="button-quick-post"
-          >
-            <Send className="w-3.5 h-3.5 mr-1.5" />
-            {isPending ? "Posting..." : "Post Now"}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ─── Recent Posts with Repost / Quote ────────────────────────────────────────
+// AI assistant
 function AiPostAssistant({
   onUseDraft,
 }: {
@@ -607,7 +402,7 @@ function AiPostAssistant({
         />
 
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Generate, then send to Quick Post</span>
+          <span className="text-xs text-muted-foreground">Generate, then send to Quick Compose</span>
           <div className="flex items-center gap-2">
             <Button
               type="button"
@@ -617,10 +412,10 @@ function AiPostAssistant({
               onClick={() => {
                 if (!latestAssistant?.content) return;
                 onUseDraft(latestAssistant.content);
-                toast({ title: "Inserted", description: "AI draft moved to Quick Post." });
+                toast({ title: "Inserted", description: "AI draft moved to Quick Compose." });
               }}
             >
-              Use in Quick Post
+              Use in Quick Compose
             </Button>
             <Button
               type="button"
@@ -639,33 +434,52 @@ function AiPostAssistant({
 
 function RecentPosts() {
   const { user } = useAuth();
-  const { toast } = useToast();
-  const [quotingPostId, setQuotingPostId] = useState<string | null>(null);
-  const [quoteText, setQuoteText] = useState("");
 
   const { data: posts = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/posts/recent"],
     enabled: !!user?.threadsAccessToken,
   });
-
-  const repostMutation = useMutation({
-    mutationFn: (postId: string) => apiRequest("POST", `/api/posts/${postId}/repost`, {}),
-    onSuccess: () => toast({ title: "Reposted!" }),
-    onError: (err: any) => toast({ title: "Repost failed", description: err.message, variant: "destructive" }),
-  });
-
-  const quoteMutation = useMutation({
-    mutationFn: ({ postId, content }: { postId: string; content: string }) =>
-      apiRequest("POST", `/api/posts/${postId}/quote`, { content }),
-    onSuccess: () => {
-      toast({ title: "Quote posted!" });
-      setQuotingPostId(null);
-      setQuoteText("");
+  const visiblePosts = posts.slice(0, 8);
+  const visiblePostIds = visiblePosts.map((post) => post.id).filter(Boolean);
+  const { data: insightsByPostId = {} } = useQuery<Record<string, any>>({
+    queryKey: ["/api/posts/recent/insights", visiblePostIds.join(",")],
+    enabled: !!user?.threadsAccessToken && visiblePostIds.length > 0,
+    queryFn: async () => {
+      const results = await Promise.all(
+        visiblePostIds.map(async (postId: string) => {
+          try {
+            const insights = await apiRequest("GET", `/api/posts/${postId}/insights`);
+            return [postId, insights] as const;
+          } catch {
+            return [postId, null] as const;
+          }
+        }),
+      );
+      return Object.fromEntries(results);
     },
-    onError: (err: any) => toast({ title: "Quote failed", description: err.message, variant: "destructive" }),
   });
 
   if (!user?.threadsAccessToken) return null;
+
+  const getRelativeTime = (timestamp: string | number | Date) => {
+    const ms = new Date(timestamp).getTime();
+    if (Number.isNaN(ms)) return "";
+
+    const diffMs = Math.max(0, Date.now() - ms);
+    const minutes = Math.floor(diffMs / (1000 * 60));
+    if (minutes < 60) return `${Math.max(1, minutes)}m`;
+
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d`;
+
+    return format(new Date(ms), "MMM d");
+  };
+
+  const username = user.threadsUsername || user.email || "Unknown";
+  const avatarFallback = username.slice(0, 2).toUpperCase();
 
   return (
     <Card>
@@ -686,97 +500,127 @@ function RecentPosts() {
         ) : posts.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-6">No posts yet</p>
         ) : (
-          <div className="space-y-2">
-            {posts.slice(0, 5).map(post => (
-              <div key={post.id}>
-                <div className="flex items-start gap-2 p-2.5 rounded-md bg-muted/40 group">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-foreground line-clamp-2">{post.text || "(media post)"}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {formatDistanceToNow(new Date(post.timestamp), { addSuffix: true })}
-                      {post.like_count > 0 && <span className="ml-2">❤️ {post.like_count}</span>}
-                      {post.replies_count > 0 && <span className="ml-2">💬 {post.replies_count}</span>}
-                    </p>
-                    {post.appTag && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {post.appTag.split(",").map((tag: string) => tag.trim()).filter((tag: string) => Boolean(tag)).map((tag: string) => (
-                          <span
-                            key={tag}
-                            className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary/10 text-primary border border-primary/20"
-                          >
-                            {tag}
-                          </span>
-                        ))}
+          <div
+            className="h-[420px] overflow-y-auto rounded-lg bg-slate-950/35 px-2 [scrollbar-gutter:stable] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 hover:[&::-webkit-scrollbar-thumb]:bg-muted-foreground/45"
+            style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(148,163,184,0.45) transparent" }}
+          >
+            {visiblePosts.map((post, index) => {
+              const insights = insightsByPostId[post.id] || null;
+              const topicTag = post.topicTag || post.topic_tag || post.internalTopicTag || null;
+              const likeCount = Number(
+                insights?.likes ?? post.like_count ?? post.likes ?? post.insights?.likes ?? post.insightsLikes ?? 0,
+              ) || 0;
+              const repliesCount = Number(
+                insights?.replies ?? post.replies_count ?? post.replies ?? post.insights?.replies ?? post.insightsReplies ?? 0,
+              ) || 0;
+              const repostCount = Number(
+                insights?.reposts ?? post.repost_count ?? post.reposts ?? post.insights?.reposts ?? post.insightsReposts ?? 0,
+              ) || 0;
+              const quoteCount = Number(
+                insights?.quotes ?? post.quote_count ?? post.quotes ?? post.insights?.quotes ?? post.insightsQuotes ?? 0,
+              ) || 0;
+              const viewsCount = Number(
+                insights?.views ?? post.views ?? post.view_count ?? post.insights?.views ?? post.insightsViews ?? 0,
+              ) || 0;
+
+              return (
+                <div
+                  key={post.id}
+                  className={`py-4 ${index < Math.min(posts.length, 8) - 1 ? "border-b border-border/40" : ""}`}
+                >
+                <div className="flex items-start gap-3">
+                  <Avatar className="w-8 h-8 flex-shrink-0 mt-0.5">
+                    <AvatarImage src={user.threadsProfilePicUrl || undefined} />
+                    <AvatarFallback className="text-[11px]">{avatarFallback}</AvatarFallback>
+                  </Avatar>
+
+                  <div className="flex-1 min-w-0 relative pr-10">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-sm font-semibold text-foreground truncate">{username}</span>
+                        {topicTag && (
+                          <>
+                            <span className="text-xs text-muted-foreground">{"\u203A"}</span>
+                            <span className="inline-flex items-center gap-1 text-sm font-semibold text-sky-500 truncate">
+                              <Sparkles className="w-3 h-3" />
+                              {topicTag}
+                            </span>
+                          </>
+                        )}
                       </div>
-                    )}
-                  </div>
-                  {/* Repost + Quote buttons appear on hover */}
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7"
-                      title="Repost"
-                      onClick={() => repostMutation.mutate(post.id)}
-                      disabled={repostMutation.isPending}
-                    >
-                      <Repeat2 className="w-3.5 h-3.5 text-green-500" />
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7"
-                      title="Quote"
-                      onClick={() => { setQuotingPostId(post.id === quotingPostId ? null : post.id); setQuoteText(""); }}
-                    >
-                      <Quote className="w-3.5 h-3.5 text-purple-500" />
-                    </Button>
+                      <span className="text-xs text-muted-foreground flex-shrink-0">
+                        {getRelativeTime(post.timestamp)}
+                      </span>
+                    </div>
                     {post.permalink && (
-                      <a href={post.permalink} target="_blank" rel="noopener noreferrer">
+                      <a
+                        href={post.permalink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="absolute right-0 top-4"
+                      >
                         <Button size="icon" variant="ghost" className="h-7 w-7">
-                          <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
+                          <ExternalLink className="w-3.5 h-3.5" />
                         </Button>
                       </a>
                     )}
+
+                    <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+                      {post.text || "(media post)"}
+                    </p>
+
+                    <div className="flex items-center gap-4 mt-2">
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        {"\u2661"} {likeCount}
+                      </span>
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        {"\uD83D\uDCAC"} {repliesCount}
+                      </span>
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Repeat2 className="w-3 h-3" />
+                        {repostCount}
+                      </span>
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Quote className="w-3 h-3" />
+                        {quoteCount}
+                      </span>
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Eye className="w-3 h-3" />
+                        {viewsCount}
+                      </span>
+                    </div>
+
+                    {post.appTag && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {post.appTag
+                          .split(",")
+                          .map((tag: string) => tag.trim())
+                          .filter((tag: string) => Boolean(tag))
+                          .map((tag: string) => (
+                            <span
+                              key={tag}
+                              className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary/10 text-primary border border-primary/20"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                      </div>
+                    )}
+
                   </div>
                 </div>
-
-                {/* Inline quote composer */}
-                {quotingPostId === post.id && (
-                  <div className="mt-1 ml-2 p-3 rounded-md border border-primary/30 bg-primary/5 space-y-2">
-                    <p className="text-xs text-primary font-medium">✎ Quote this post</p>
-                    <Textarea
-                      placeholder="Add your comment..."
-                      value={quoteText}
-                      onChange={e => setQuoteText(e.target.value)}
-                      className="resize-none text-sm min-h-[70px]"
-                      maxLength={500}
-                      autoFocus
-                    />
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        disabled={!quoteText.trim() || quoteMutation.isPending}
-                        onClick={() => quoteMutation.mutate({ postId: post.id, content: quoteText })}
-                      >
-                        {quoteMutation.isPending ? "Posting..." : "Post Quote"}
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setQuotingPostId(null)}>Cancel</Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         )}
       </CardContent>
     </Card>
   );
 }
-
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const [quickPostDraft, setQuickPostDraft] = useState<QuickPostDraft | null>(null);
+  const [quickComposeDraft, setQuickComposeDraft] = useState<QuickComposeDraft | null>(null);
   const { data: scheduledPosts = [], isLoading: loadingScheduled } = useQuery<ScheduledPost[]>({ queryKey: ["/api/posts/scheduled"] });
   const { data: bulkQueues = [], isLoading: loadingBulk } = useQuery<BulkQueueWithItems[]>({ queryKey: ["/api/bulk-queues"] });
   const { data: followUps = [], isLoading: loadingFollowUps } = useQuery<FollowUpThread[]>({ queryKey: ["/api/follow-ups"] });
@@ -802,8 +646,8 @@ export default function Dashboard() {
     { label: "Comments", href: "/comments", icon: MessageSquare, desc: "Manage replies and likes" },
   ];
 
-  const injectDraftIntoQuickPost = (text: string) => {
-    setQuickPostDraft({ id: Date.now(), text });
+  const injectDraftIntoQuickCompose = (text: string) => {
+    setQuickComposeDraft({ id: Date.now(), text });
   };
 
   return (
@@ -836,10 +680,27 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-        {/* ✅ Topic dropdown is now INSIDE QuickPost, above the textarea */}
-        <QuickPost injectedDraft={quickPostDraft} />
+        {/* Shared Quick Compose card */}
+        <PostComposerCard
+          title="Quick Post"
+          mode="quick"
+          description="Publish now or schedule from the dashboard"
+          icon={PenSquare}
+          injectedDraft={quickComposeDraft}
+          onDraftConsumed={() => setQuickComposeDraft(null)}
+          testIds={{
+            topicInput: "input-quick-compose-topic",
+            textarea: "textarea-quick-compose",
+            mediaUrl: "input-quick-compose-media-url",
+            postNowButton: "button-quick-compose-post-now",
+            scheduleButton: "button-quick-compose-schedule",
+            confirmScheduleButton: "button-quick-compose-confirm-schedule",
+            scheduledDateInput: "input-quick-compose-scheduled-date",
+            scheduledTimeInput: "input-quick-compose-scheduled-time",
+          }}
+        />
 
-        <AiPostAssistant onUseDraft={injectDraftIntoQuickPost} />
+        <AiPostAssistant onUseDraft={injectDraftIntoQuickCompose} />
 
         <Card>
           <CardHeader className="pb-3">
@@ -891,7 +752,10 @@ export default function Dashboard() {
             {loadingScheduled ? (
               <div className="space-y-3">{[1, 2, 3].map(i => <Skeleton key={i} className="h-12 w-full" />)}</div>
             ) : pendingScheduled.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-8 text-center">
+              <div
+                className="h-[420px] overflow-y-auto flex flex-col items-center justify-center py-8 text-center [scrollbar-gutter:stable] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 hover:[&::-webkit-scrollbar-thumb]:bg-muted-foreground/45"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(148,163,184,0.45) transparent" }}
+              >
                 <Clock className="w-8 h-8 text-muted-foreground mb-2" />
                 <p className="text-sm text-muted-foreground">No scheduled posts yet</p>
                 <Link href="/compose">
@@ -899,7 +763,10 @@ export default function Dashboard() {
                 </Link>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div
+                className="h-[420px] overflow-y-auto space-y-2 [scrollbar-gutter:stable] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 hover:[&::-webkit-scrollbar-thumb]:bg-muted-foreground/45"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(148,163,184,0.45) transparent" }}
+              >
                 {pendingScheduled.slice(0, 5).map((post) => (
                   <div key={post.id} className="flex items-start gap-3 p-2.5 rounded-md bg-muted/40">
                     <div className="flex-1 min-w-0">
@@ -920,3 +787,6 @@ export default function Dashboard() {
     </div>
   );
 }
+
+
+

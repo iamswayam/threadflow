@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
-import { eq, desc, and, lte, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { eq, desc, and, lte, inArray, isNotNull, isNull, lt, or, ne } from "drizzle-orm";
 import {
   users, scheduledPosts, bulkQueues, bulkQueueItems, followUpThreads, postMetadata,
   type User, type InsertUser,
@@ -40,6 +40,8 @@ export interface IStorage {
   createScheduledPost(userId: string, post: InsertScheduledPost): Promise<ScheduledPost>;
   updateScheduledPost(id: string, updates: Partial<ScheduledPost>): Promise<ScheduledPost>;
   deleteScheduledPost(id: string): Promise<void>;
+  markPostDeleted(postId: string, userId: string): Promise<void>;
+  getDeletedPosts(userId: string): Promise<ScheduledPost[]>;
   getPendingDueScheduledPosts(): Promise<(ScheduledPost & { userToken: string | null; userId: string | null })[]>;
 
   getBulkQueues(userId: string): Promise<BulkQueueWithItems[]>;
@@ -106,10 +108,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getScheduledPosts(userId: string): Promise<ScheduledPost[]> {
-    return db.select().from(scheduledPosts).where(eq(scheduledPosts.userId, userId)).orderBy(desc(scheduledPosts.createdAt));
+    return db.select().from(scheduledPosts).where(and(
+      eq(scheduledPosts.userId, userId),
+      ne(scheduledPosts.status, "deleted"),
+    )).orderBy(desc(scheduledPosts.createdAt));
   }
   async getScheduledPost(id: string): Promise<ScheduledPost | undefined> {
-    const [post] = await db.select().from(scheduledPosts).where(eq(scheduledPosts.id, id));
+    const [post] = await db.select().from(scheduledPosts).where(and(
+      eq(scheduledPosts.id, id),
+      ne(scheduledPosts.status, "deleted"),
+    ));
     return post;
   }
   async createScheduledPost(userId: string, post: InsertScheduledPost): Promise<ScheduledPost> {
@@ -123,10 +131,34 @@ export class DatabaseStorage implements IStorage {
   async deleteScheduledPost(id: string): Promise<void> {
     await db.delete(scheduledPosts).where(eq(scheduledPosts.id, id));
   }
+  async markPostDeleted(postId: string, userId: string): Promise<void> {
+    await db
+      .update(scheduledPosts)
+      .set({ status: "deleted", deletedAt: new Date() })
+      .where(and(
+        eq(scheduledPosts.id, postId),
+        eq(scheduledPosts.userId, userId),
+      ));
+  }
+  async getDeletedPosts(userId: string): Promise<ScheduledPost[]> {
+    return db
+      .select()
+      .from(scheduledPosts)
+      .where(and(
+        eq(scheduledPosts.userId, userId),
+        eq(scheduledPosts.status, "deleted"),
+      ))
+      .orderBy(desc(scheduledPosts.deletedAt))
+      .limit(100);
+  }
   async getPendingDueScheduledPosts() {
     const rows = await db.select({ post: scheduledPosts, userToken: users.threadsAccessToken, userId: users.id })
       .from(scheduledPosts).leftJoin(users, eq(scheduledPosts.userId, users.id))
-      .where(and(eq(scheduledPosts.status, "pending"), lte(scheduledPosts.scheduledAt, new Date())));
+      .where(and(
+        eq(scheduledPosts.status, "pending"),
+        ne(scheduledPosts.status, "deleted"),
+        lte(scheduledPosts.scheduledAt, new Date()),
+      ));
     return rows.map(r => ({ ...r.post, userToken: r.userToken, userId: r.userId }));
   }
 
@@ -257,8 +289,9 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(scheduledPosts.userId, userId),
-          isNotNull(scheduledPosts.appTag)
-        )
+          isNotNull(scheduledPosts.appTag),
+          ne(scheduledPosts.status, "deleted"),
+        ),
       );
     const allTags = rows
       .flatMap((r) => (r.appTag || "").split(","))
@@ -276,7 +309,10 @@ export class DatabaseStorage implements IStorage {
       const allPosts = await db
         .select()
         .from(scheduledPosts)
-        .where(eq(scheduledPosts.userId, userId))
+        .where(and(
+          eq(scheduledPosts.userId, userId),
+          ne(scheduledPosts.status, "deleted"),
+        ))
         .orderBy(desc(scheduledPosts.createdAt));
       return allPosts.filter((p) =>
         p.appTag
@@ -286,7 +322,10 @@ export class DatabaseStorage implements IStorage {
       );
     }
     return db.select().from(scheduledPosts)
-      .where(eq(scheduledPosts.userId, userId))
+      .where(and(
+        eq(scheduledPosts.userId, userId),
+        ne(scheduledPosts.status, "deleted"),
+      ))
       .orderBy(desc(scheduledPosts.createdAt));
   }
 
@@ -299,6 +338,7 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(scheduledPosts.userId, userId),
           eq(scheduledPosts.status, "published"),
+          ne(scheduledPosts.status, "deleted"),
           isNotNull(scheduledPosts.threadsPostId),
           or(
             isNull(scheduledPosts.insightsFetchedAt),
@@ -318,6 +358,7 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(scheduledPosts.userId, userId),
           eq(scheduledPosts.status, "published"),
+          ne(scheduledPosts.status, "deleted"),
           isNotNull(scheduledPosts.threadsPostId),
           isNotNull(scheduledPosts.insightsViews),
         ),

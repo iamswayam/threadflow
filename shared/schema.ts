@@ -55,6 +55,7 @@ export const scheduledPosts = pgTable("scheduled_posts", {
   insightsReposts: integer("insights_reposts"),
   insightsQuotes: integer("insights_quotes"),
   insightsFetchedAt: timestamp("insights_fetched_at"),
+  deletedAt: timestamp("deleted_at"),
   errorMessage: text("error_message"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });

@@ -435,7 +435,26 @@ export async function getPostInsights(token: string, postId: string): Promise<{
   }
 }
 
-// ✅ Get recent posts with full fields including engagement counts
+export async function deletePost(accessToken: string, postId: string): Promise<void> {
+  const response = await fetch(`${BASE_URL}/${postId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (response.ok) return;
+
+  let message = `Threads API error ${response.status}`;
+  try {
+    const data = await response.json();
+    message = data?.error?.message || message;
+  } catch {
+    // Ignore parse failures and keep default message.
+  }
+  throw new Error(message);
+}
+// Get recent posts with full fields including engagement counts
 export async function getUserPosts(token: string, userId: string, limit = 25): Promise<any[]> {
   const safeLimit = Math.min(Math.max(limit, 1), 500);
   const collected: any[] = [];
@@ -444,7 +463,7 @@ export async function getUserPosts(token: string, userId: string, limit = 25): P
   while (collected.length < safeLimit) {
     const remaining = safeLimit - collected.length;
     const pageSize = Math.min(remaining, 100);
-    let path = `/${userId}/threads?fields=id,text,timestamp,media_type,permalink,like_count,replies_count,repost_count,quote_count,views&limit=${pageSize}`;
+    let path = `/${userId}/threads?fields=id,text,timestamp,media_type,permalink,like_count,replies_count,repost_count,quote_count,views,topic_tag&limit=${pageSize}`;
     if (after) path += `&after=${encodeURIComponent(after)}`;
 
     const page = await threadsRequest(token, path);
@@ -570,3 +589,4 @@ export async function postThreadChain(
 
   return publishedIds;
 }
+

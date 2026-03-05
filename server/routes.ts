@@ -891,10 +891,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const mergedPosts = posts.map((post: any) => {
         const meta = typeof post?.id === "string" ? metadataById.get(post.id) : undefined;
+        const apiTopicTag =
+          typeof post?.topic_tag === "string"
+            ? post.topic_tag
+            : typeof post?.topicTag === "string"
+              ? post.topicTag
+              : null;
         return {
           ...post,
           appTag: meta?.appTag || null,
           internalTopicTag: meta?.topicTag || null,
+          topicTag: apiTopicTag || meta?.topicTag || null,
         };
       });
       res.json(mergedPosts);
@@ -1464,8 +1471,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/posts/schedule", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     try {
+      const scheduledAtInput = req.body?.scheduledAt;
+      const scheduledAt = new Date(scheduledAtInput);
+      if (!scheduledAtInput || Number.isNaN(scheduledAt.getTime())) {
+        return res.status(400).json({ error: "Invalid scheduledAt value" });
+      }
+
       const post = await storage.createScheduledPost(userId, {
         ...req.body,
+        scheduledAt,
         appTag: normalizeAppTag(req.body?.appTag) || null,
       });
       res.json(post);
@@ -1481,7 +1495,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/posts/scheduled/:id", requireAuth, async (req, res) => {
     try {
       const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      const post = await storage.updateScheduledPost(id, req.body);
+      const updates = { ...(req.body || {}) } as Record<string, unknown>;
+      if (updates.scheduledAt != null) {
+        const parsed = new Date(String(updates.scheduledAt));
+        if (Number.isNaN(parsed.getTime())) {
+          return res.status(400).json({ error: "Invalid scheduledAt value" });
+        }
+        updates.scheduledAt = parsed;
+      }
+      const post = await storage.updateScheduledPost(id, updates);
       res.json(post);
     } catch (err: any) { res.status(400).json({ error: err.message }); }
   });
