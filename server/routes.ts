@@ -826,12 +826,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.patch("/api/admin/set-plan", requireAuth, async (req, res) => {
     const requester = getUser(req);
+    const targetEmail = typeof req.body?.targetEmail === "string" ? req.body.targetEmail.trim() : "";
     const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
-    if (!adminEmail || requester.email.toLowerCase() !== adminEmail) {
+    const requesterEmail = requester.email.toLowerCase();
+    const isSelfUpdate = !!targetEmail && targetEmail.toLowerCase() === requesterEmail;
+    const isAdmin = !!adminEmail && requesterEmail === adminEmail;
+    if (!isSelfUpdate && !isAdmin) {
       return res.status(403).json({ error: "FORBIDDEN" });
     }
 
-    const targetEmail = typeof req.body?.targetEmail === "string" ? req.body.targetEmail.trim() : "";
     const rawPlan = typeof req.body?.plan === "string" ? req.body.plan.trim().toLowerCase() : "";
     const plan = rawPlan === "free" || rawPlan === "pro" ? rawPlan : null;
     if (!targetEmail || !plan) {

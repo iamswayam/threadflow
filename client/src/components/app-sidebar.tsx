@@ -1,13 +1,15 @@
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, SidebarFooter,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, PenSquare, Layers, Timer, MessageSquare, Inbox, Settings, LogOut, Bookmark } from "lucide-react";
+import { LayoutDashboard, PenSquare, Layers, Timer, MessageSquare, Inbox, Settings, LogOut, Bookmark, Crown } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { ThreadFlowLogo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { apiRequest } from "@/lib/queryClient";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -23,8 +25,36 @@ const navItems = [
 export function AppSidebar() {
   const [location] = useLocation();
   const { user, signout, hasThreadsConnected } = useAuth();
+  const [devProMode, setDevProMode] = useState(false);
+  const [proStateReady, setProStateReady] = useState(false);
 
   const userInitial = user?.email?.[0]?.toUpperCase() || "U";
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("threadflow_dev_pro");
+      setDevProMode(saved === "true");
+    } catch {
+      setDevProMode(false);
+    } finally {
+      setProStateReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!proStateReady || !user?.email) return;
+
+    try {
+      localStorage.setItem("threadflow_dev_pro", String(devProMode));
+    } catch {
+      // Ignore storage failures.
+    }
+
+    void apiRequest("PATCH", "/api/admin/set-plan", {
+      targetEmail: user.email,
+      plan: devProMode ? "pro" : "free",
+    }).catch(() => {});
+  }, [devProMode, proStateReady, user?.email]);
 
   return (
     <Sidebar className="border-r border-sidebar-border">
@@ -39,7 +69,34 @@ export function AppSidebar() {
         <div className="flex items-center gap-2.5">
           <ThreadFlowLogo className="w-8 h-8" />
           <div>
-            <p className="font-bold text-base leading-tight text-sidebar-foreground tracking-tight">ThreadFlow</p>
+            <div className="flex items-center gap-2">
+              <p className="font-bold text-base leading-tight text-sidebar-foreground tracking-tight">ThreadFlow</p>
+              <button
+                type="button"
+                onClick={() => setDevProMode((prev) => !prev)}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest transition-all ${
+                  devProMode
+                    ? "bg-gradient-to-r from-orange-500 to-orange-600 border border-orange-400 text-black scale-[1.02]"
+                    : "bg-gradient-to-r from-orange-500 to-orange-600 border border-orange-400 text-black opacity-20 grayscale"
+                }`}
+                style={
+                  devProMode
+                    ? {
+                        textShadow: "0 1px 1px rgba(0,0,0,0.85)",
+                        boxShadow: "0 0 8px rgba(249,115,22,0.8), 0 2px 4px rgba(0,0,0,0.8)",
+                      }
+                    : {
+                        textShadow: "0 1px 1px rgba(0,0,0,0.7)",
+                        boxShadow: "none",
+                        filter: "grayscale(1)",
+                      }
+                }
+                title={devProMode ? "Pro Plan Active" : "Click to activate Pro (dev mode)"}
+              >
+                <Crown className="w-3 h-3" />
+                PRO
+              </button>
+            </div>
             <p className="text-xs text-muted-foreground leading-tight">Threads Manager</p>
           </div>
         </div>

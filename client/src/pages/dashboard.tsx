@@ -260,7 +260,7 @@ function AiPostAssistant({
     queryKey: ["/api/ai/providers"],
     queryFn: () => apiRequest("GET", "/api/ai/providers"),
   });
-  const { data: usageData } = useQuery<AiUsage>({
+  const { data: usageData, refetch: refetchUsage } = useQuery<AiUsage>({
     queryKey: ["/api/ai/usage"],
     queryFn: () => apiRequest("GET", "/api/ai/usage"),
   });
@@ -268,6 +268,14 @@ function AiPostAssistant({
   useEffect(() => {
     if (usageData) setUsage(usageData);
   }, [usageData]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      void refetchUsage();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refetchUsage]);
 
   useEffect(() => {
     if (!providers.length) {
@@ -448,19 +456,25 @@ function AiPostAssistant({
           )}
         </div>
 
-        {usage && !usage.unlimited && (
+        {usage && (
           <div className="flex justify-end">
-            <span
-              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
-                usage.used >= usage.limit
-                  ? "border-destructive/40 text-destructive bg-destructive/10"
-                  : usage.used >= 8
-                    ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
-                    : "border-border text-muted-foreground bg-muted/30"
-              }`}
-            >
-              ✦ {usage.used} / {usage.limit} AI requests today
-            </span>
+            {usage.plan === "pro" ? (
+              <span className="text-xs text-orange-400">✦ Pro · Unlimited</span>
+            ) : usage.unlimited ? (
+              <span className="text-xs text-muted-foreground">✦ Own key · Unlimited</span>
+            ) : (
+              <span
+                className={`text-xs ${
+                  usage.used >= usage.limit
+                    ? "text-destructive"
+                    : usage.used >= 8
+                      ? "text-amber-500"
+                      : "text-muted-foreground"
+                }`}
+              >
+                ✦ {usage.used} / {usage.limit} today
+              </span>
+            )}
           </div>
         )}
 
