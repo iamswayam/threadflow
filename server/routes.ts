@@ -157,6 +157,22 @@ function toNullableInt(value: unknown): number | null {
   return Math.round(n);
 }
 
+function isThreadsMissingPostError(err: unknown): boolean {
+  const message = String((err as any)?.message || "").toLowerCase();
+  return (
+    message.includes("not found") ||
+    message.includes("invalid media") ||
+    message.includes("does not exist") ||
+    message.includes("unknown media") ||
+    message.includes("#100")
+  );
+}
+
+function isAcceptableDeleteError(err: unknown): boolean {
+  const message = String((err as any)?.message || "").toLowerCase();
+  return message.includes("404") || message.includes("already deleted") || isThreadsMissingPostError(err);
+}
+
 async function refreshScheduledPostInsights(
   accessToken: string,
   scheduledPostId: string,
@@ -1529,6 +1545,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(posts);
   });
 
+  app.get("/api/posts/deleted", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const posts = await storage.getDeletedPosts(userId);
+    res.json(posts);
+  });
+
   app.get("/api/posts/dna-data", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const posts = await storage.getPostsWithDnaData(userId);
@@ -1554,7 +1576,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         try {
           await refreshScheduledPostInsights(user.threadsAccessToken, post.id, post.threadsPostId);
           refreshed++;
-        } catch {
+        } catch (err) {
+          if (isThreadsMissingPostError(err)) {
+            await storage.markPostDeleted(post.id, userId);
+          }
           // Best-effort per-post refresh, continue remaining posts.
         }
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1648,6 +1673,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  app.delete("/api/posts/:postId", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const postId = Array.isArray(req.params.postId) ? req.params.postId[0] : req.params.postId;
+
+    const user = await storage.getUserById(userId);
+    const activePosts = await storage.getPostsByAppTag(userId, null);
+    const deletedPosts = await storage.getDeletedPosts(userId);
+    const post = activePosts.find((p) => p.id === postId) || deletedPosts.find((p) => p.id === postId);
+
+    if (!post) return res.status(404).json({ error: "Post not found" });
+
+    let deletedFromThreads = false;
+    if (post.threadsPostId && user?.threadsAccessToken) {
+      try {
+        await threads.deletePost(user.threadsAccessToken, post.threadsPostId);
+        deletedFromThreads = true;
+      } catch (err) {
+        if (isAcceptableDeleteError(err)) {
+          deletedFromThreads = true;
+        }
+      }
+    }
+
+    await storage.markPostDeleted(post.id, userId);
+    res.json({ success: true, deletedFromThreads });
   });
 
   // â”€â”€ Bulk Queues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

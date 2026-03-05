@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,10 +14,14 @@ import {
   MessageCircle,
   Repeat2,
   TrendingUp,
+  Trash2,
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
-import { format } from "date-fns";
+import { useToast } from "@/hooks/use-toast";
+import { format, formatDistanceToNow } from "date-fns";
 import type { ScheduledPost } from "@shared/schema";
+
+const DELETED_TAG = "__deleted__";
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<
@@ -33,6 +37,7 @@ function StatusBadge({ status }: { status: string }) {
     failed: { label: "Failed", variant: "destructive" },
     running: { label: "Running", variant: "default" },
     completed: { label: "Completed", variant: "default" },
+    deleted: { label: "Deleted", variant: "destructive" },
   };
   const cfg = map[status] || { label: status, variant: "outline" as const };
   return <Badge variant={cfg.variant}>{cfg.label}</Badge>;
@@ -71,8 +76,29 @@ type TagInsights = {
   posts: PostWithInsights[];
 };
 
+function toMetric(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function getInsights(post: PostWithInsights): PostInsightMetrics {
+  return {
+    views: toMetric(post.insights?.views ?? (post as any).insightsViews),
+    likes: toMetric(post.insights?.likes ?? (post as any).insightsLikes),
+    replies: toMetric(post.insights?.replies ?? (post as any).insightsReplies),
+    reposts: toMetric(post.insights?.reposts ?? (post as any).insightsReposts),
+    quotes: toMetric(post.insights?.quotes ?? (post as any).insightsQuotes),
+  };
+}
+
 export default function MyContent() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [confirmDeletePostId, setConfirmDeletePostId] = useState<string | null>(null);
+
+  const isDeletedView = selectedTag === DELETED_TAG;
 
   useEffect(() => {
     const token = localStorage.getItem("tf_token");
@@ -99,23 +125,56 @@ export default function MyContent() {
         "GET",
         `/api/posts/my-content${selectedTag ? `?tag=${encodeURIComponent(selectedTag)}` : ""}`,
       ),
-    enabled: !selectedTag,
+    enabled: selectedTag === null,
+  });
+
+  const { data: deletedPosts = [], isLoading: loadingDeleted } = useQuery<ScheduledPost[]>({
+    queryKey: ["/api/posts/deleted"],
+    queryFn: () => apiRequest("GET", "/api/posts/deleted"),
   });
 
   const { data: tagInsights, isLoading: loadingInsights } = useQuery<TagInsights>({
     queryKey: ["/api/posts/tag-insights", selectedTag],
     queryFn: () =>
       apiRequest("GET", `/api/posts/tag-insights?tag=${encodeURIComponent(selectedTag!)}`),
-    enabled: !!selectedTag,
+    enabled: !!selectedTag && selectedTag !== DELETED_TAG,
+  });
+
+  const deletePostMutation = useMutation({
+    mutationFn: (postId: string) => apiRequest("DELETE", `/api/posts/${postId}`),
+    onSuccess: () => {
+      toast({ title: "Moved to Deleted" });
+      setConfirmDeletePostId(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/my-content"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/tags"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/deleted"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/tag-insights"] });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Delete failed",
+        description: err?.message || "Unable to delete post",
+        variant: "destructive",
+      });
+    },
   });
 
   const getTagCount = (tag: string) =>
     allPosts.filter((p) => p.appTag?.split(",").map((t) => t.trim()).includes(tag)).length;
   const totalPosts = allPosts.length;
+  const deletedCount = deletedPosts.length;
 
-  const displayPosts: PostWithInsights[] = selectedTag ? (tagInsights?.posts ?? []) : posts;
+  const displayPosts: PostWithInsights[] = isDeletedView
+    ? (deletedPosts as PostWithInsights[])
+    : selectedTag
+      ? (tagInsights?.posts ?? [])
+      : (posts as PostWithInsights[]);
+
+  const loadingDisplayPosts =
+    selectedTag === null ? loadingPosts : isDeletedView ? loadingDeleted : loadingInsights;
+
   const latestPost =
-    displayPosts.length > 0
+    selectedTag && !isDeletedView && displayPosts.length > 0
       ? [...displayPosts].sort(
           (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
         )[0]
@@ -139,7 +198,10 @@ export default function MyContent() {
                 variant={selectedTag === null ? "default" : "ghost"}
                 size="sm"
                 className="w-full justify-start font-normal"
-                onClick={() => setSelectedTag(null)}
+                onClick={() => {
+                  setSelectedTag(null);
+                  setConfirmDeletePostId(null);
+                }}
               >
                 <FileText className="w-4 h-4 mr-2" />
                 All Posts
@@ -163,7 +225,10 @@ export default function MyContent() {
                     variant={selectedTag === tag ? "default" : "ghost"}
                     size="sm"
                     className="w-full justify-start font-normal"
-                    onClick={() => setSelectedTag(tag)}
+                    onClick={() => {
+                      setSelectedTag(tag);
+                      setConfirmDeletePostId(null);
+                    }}
                   >
                     <Hash className="w-4 h-4 mr-2" />
                     {tag}
@@ -173,12 +238,34 @@ export default function MyContent() {
                   </Button>
                 ))
               )}
+
+              <div className="my-2 border-t border-border/60" />
+
+              <Button
+                variant={isDeletedView ? "secondary" : "ghost"}
+                size="sm"
+                className={`w-full justify-start font-normal ${
+                  isDeletedView
+                    ? "bg-destructive/15 text-destructive hover:bg-destructive/20"
+                    : "text-destructive/80 hover:text-destructive hover:bg-destructive/10"
+                }`}
+                onClick={() => {
+                  setSelectedTag(DELETED_TAG);
+                  setConfirmDeletePostId(null);
+                }}
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Deleted
+                <Badge variant="outline" className="ml-auto text-xs border-destructive/40 text-destructive">
+                  {deletedCount}
+                </Badge>
+              </Button>
             </CardContent>
           </Card>
         </div>
 
         <div className="flex-1 space-y-4">
-          {selectedTag && (
+          {selectedTag && !isDeletedView && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {loadingInsights ? (
                 Array.from({ length: 4 }).map((_, i) => (
@@ -226,7 +313,7 @@ export default function MyContent() {
             </div>
           )}
 
-          {selectedTag && tagInsights?.bestPost && (
+          {selectedTag && !isDeletedView && tagInsights?.bestPost && (
             <Card className="border-primary/30 bg-primary/5">
               <CardContent className="py-3 px-4">
                 <div className="flex items-start gap-2">
@@ -238,14 +325,10 @@ export default function MyContent() {
                     <p className="text-sm text-foreground line-clamp-1">{tagInsights.bestPost.content}</p>
                     <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                       {tagInsights.bestPost.views !== undefined && (
-                        <span>
-                          {Number(tagInsights.bestPost.views).toLocaleString()} views
-                        </span>
+                        <span>{Number(tagInsights.bestPost.views).toLocaleString()} views</span>
                       )}
                       {tagInsights.bestPost.likes !== undefined && (
-                        <span>
-                          {Number(tagInsights.bestPost.likes).toLocaleString()} likes
-                        </span>
+                        <span>{Number(tagInsights.bestPost.likes).toLocaleString()} likes</span>
                       )}
                       {tagInsights.bestPost.threadsPostId && (
                         <a
@@ -267,8 +350,10 @@ export default function MyContent() {
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base">{selectedTag ? `#${selectedTag}` : "All Posts"}</CardTitle>
-                {selectedTag && latestPost && (
+                <CardTitle className="text-base">
+                  {isDeletedView ? "Deleted Posts" : selectedTag ? `#${selectedTag}` : "All Posts"}
+                </CardTitle>
+                {selectedTag && !isDeletedView && latestPost && (
                   <span className="text-xs text-muted-foreground">
                     Latest: {format(new Date(latestPost.createdAt), "MMM d, h:mm a")}
                   </span>
@@ -276,7 +361,7 @@ export default function MyContent() {
               </div>
             </CardHeader>
             <CardContent>
-              {loadingPosts || (selectedTag && loadingInsights) ? (
+              {loadingDisplayPosts ? (
                 <div className="space-y-3">
                   <Skeleton className="h-20 w-full" />
                   <Skeleton className="h-20 w-full" />
@@ -286,89 +371,175 @@ export default function MyContent() {
                 <div className="text-center py-12">
                   <FileText className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
                   <p className="text-sm text-muted-foreground">
-                    {selectedTag ? `No posts found with tag "${selectedTag}"` : "No posts yet"}
+                    {isDeletedView
+                      ? "No deleted posts yet"
+                      : selectedTag
+                        ? `No posts found with tag "${selectedTag}"`
+                        : "No posts yet"}
                   </p>
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {displayPosts.map((post) => (
-                    <div
-                      key={post.id}
-                      className="p-4 rounded-lg border border-border bg-card hover:border-primary/30 transition-colors"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm text-foreground line-clamp-2">{post.content}</p>
+                  {displayPosts.map((post) => {
+                    const insights = getInsights(post);
+                    const hasInsights = Object.values(insights).some(
+                      (value) => value !== undefined && value !== null,
+                    );
+                    const deletedAtValue = (post as any).deletedAt
+                      ? new Date((post as any).deletedAt)
+                      : null;
+                    const deletedTimeText =
+                      deletedAtValue && !Number.isNaN(deletedAtValue.getTime())
+                        ? formatDistanceToNow(deletedAtValue, { addSuffix: true })
+                        : null;
 
-                          <div className="flex flex-wrap items-center gap-2 mt-2">
-                            {post.appTag && (
-                              <div className="flex flex-wrap gap-1">
-                                {post.appTag.split(",").map(tag => tag.trim()).filter(Boolean).map(tag => (
-                                  <span
-                                    key={tag}
-                                    className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
-                                  >
-                                    {tag}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                            {post.topicTag && <span className="text-xs text-primary">* {post.topicTag}</span>}
-                          </div>
-
-                          {post.insights ? (
-                            <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
-                              {post.insights.views !== undefined && (
-                                <span className="flex items-center gap-1">
-                                  <Eye className="w-3 h-3" />
-                                  {Number(post.insights.views).toLocaleString()}
-                                </span>
-                              )}
-                              {post.insights.likes !== undefined && (
-                                <span className="flex items-center gap-1">
-                                  <Heart className="w-3 h-3" />
-                                  {Number(post.insights.likes).toLocaleString()}
-                                </span>
-                              )}
-                              {post.insights.replies !== undefined && (
-                                <span className="flex items-center gap-1">
-                                  <MessageCircle className="w-3 h-3" />
-                                  {Number(post.insights.replies).toLocaleString()}
-                                </span>
-                              )}
-                              {post.insights.reposts !== undefined && (
-                                <span className="flex items-center gap-1">
-                                  <Repeat2 className="w-3 h-3" />
-                                  {Number(post.insights.reposts).toLocaleString()}
-                                </span>
-                              )}
-                            </div>
-                          ) : selectedTag ? (
-                            <div className="mt-2 text-xs text-muted-foreground">No insights</div>
-                          ) : null}
-                        </div>
-
-                        <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                          <StatusBadge status={post.status} />
-                          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                            <Calendar className="w-3 h-3" />
-                            {format(new Date(post.scheduledAt), "MMM d, h:mm a")}
-                          </div>
-                          {post.threadsPostId && (
-                            <a
-                              href={`https://threads.net/t/${post.threadsPostId}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1"
+                    return (
+                      <div
+                        key={post.id}
+                        className={`p-4 rounded-lg border bg-card transition-colors ${
+                          isDeletedView
+                            ? "border-destructive/35 border-l-4 bg-destructive/5 opacity-80"
+                            : "border-border hover:border-primary/30"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <p
+                              className={`text-sm ${
+                                isDeletedView
+                                  ? "text-muted-foreground line-through decoration-destructive/50"
+                                  : "text-foreground line-clamp-2"
+                              }`}
                             >
-                              <ExternalLink className="w-3 h-3" />
-                              View on Threads
-                            </a>
-                          )}
+                              {post.content}
+                            </p>
+
+                            <div className="flex flex-wrap items-center gap-2 mt-2">
+                              {post.appTag && (
+                                <div className="flex flex-wrap gap-1">
+                                  {post.appTag
+                                    .split(",")
+                                    .map((tag) => tag.trim())
+                                    .filter(Boolean)
+                                    .map((tag) => (
+                                      <span
+                                        key={tag}
+                                        className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
+                                      >
+                                        {tag}
+                                      </span>
+                                    ))}
+                                </div>
+                              )}
+                              {post.topicTag && <span className="text-xs text-primary">* {post.topicTag}</span>}
+                            </div>
+
+                            {hasInsights ? (
+                              <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+                                {insights.views !== undefined && (
+                                  <span className="flex items-center gap-1">
+                                    <Eye className="w-3 h-3" />
+                                    {Number(insights.views).toLocaleString()}
+                                  </span>
+                                )}
+                                {insights.likes !== undefined && (
+                                  <span className="flex items-center gap-1">
+                                    <Heart className="w-3 h-3" />
+                                    {Number(insights.likes).toLocaleString()}
+                                  </span>
+                                )}
+                                {insights.replies !== undefined && (
+                                  <span className="flex items-center gap-1">
+                                    <MessageCircle className="w-3 h-3" />
+                                    {Number(insights.replies).toLocaleString()}
+                                  </span>
+                                )}
+                                {insights.reposts !== undefined && (
+                                  <span className="flex items-center gap-1">
+                                    <Repeat2 className="w-3 h-3" />
+                                    {Number(insights.reposts).toLocaleString()}
+                                  </span>
+                                )}
+                              </div>
+                            ) : selectedTag && !isDeletedView ? (
+                              <div className="mt-2 text-xs text-muted-foreground">No insights</div>
+                            ) : null}
+                          </div>
+
+                          <div className="flex flex-col items-start gap-1.5 flex-shrink-0 min-w-[136px] mr-1">
+                            {isDeletedView ? (
+                              <>
+                                <StatusBadge status="deleted" />
+                                {deletedTimeText ? (
+                                  <div className="text-xs text-destructive">Deleted {deletedTimeText}</div>
+                                ) : null}
+                              </>
+                            ) : (
+                              <>
+                                <StatusBadge status={post.status} />
+                                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                                  <Calendar className="w-3 h-3" />
+                                  {format(new Date(post.scheduledAt), "MMM d, h:mm a")}
+                                </div>
+                                {post.threadsPostId && (
+                                  <div className="flex items-center gap-2">
+                                    <a
+                                      href={`https://threads.net/t/${post.threadsPostId}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                      View on Threads
+                                    </a>
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                      onClick={() =>
+                                        setConfirmDeletePostId((prev) => (prev === post.id ? null : post.id))
+                                      }
+                                      disabled={deletePostMutation.isPending}
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </Button>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
+
+                        {!isDeletedView && confirmDeletePostId === post.id && (
+                          <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/35 bg-destructive/10 px-3 py-2">
+                            <p className="text-xs text-destructive">
+                              Delete this post from Threads and ThreadFlow?
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => deletePostMutation.mutate(post.id)}
+                                disabled={deletePostMutation.isPending}
+                              >
+                                {deletePostMutation.isPending && confirmDeletePostId === post.id
+                                  ? "Deleting..."
+                                  : "Delete"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setConfirmDeletePostId(null)}
+                                disabled={deletePostMutation.isPending}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>

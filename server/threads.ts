@@ -443,7 +443,7 @@ export async function deletePost(accessToken: string, postId: string): Promise<v
     },
   });
 
-  if (response.ok) return;
+  if (response.ok || response.status === 404) return;
 
   let message = `Threads API error ${response.status}`;
   try {
