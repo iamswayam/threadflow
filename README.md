@@ -39,14 +39,22 @@ This section is the fastest way for the next agent to understand the current pro
   - `POST /api/posts/refresh-insights`
   - `GET /api/posts/deleted`
   - `DELETE /api/posts/:postId` (internal DB id)
+- Source of records in `My Content`:
+  - only successfully published Threads posts are shown
+  - backend filter is `status = "published"` and `threadsPostId IS NOT NULL`
+  - pending/scheduled/failed items are excluded from My Content
 - All Posts insights behavior:
   - Uses stored insight snapshot fields.
   - Also fetches live per-post insights for visible/all-targeted posts with `threadsPostId` and merges live data for display.
 - Tag view (`#tag`) uses aggregated tag insights endpoint and shows stats + best post.
+- APP_TAG filter behavior:
+  - tags are shown only if they still have at least one active My Content post
+  - deleted-only tags are not shown in tag filters
 - Deleted flow:
   - Delete action always moves post to Deleted section in ThreadFlow.
   - Backend attempts Threads delete if `threadsPostId` and token are available.
   - Response includes `deletedFromThreads`.
+  - If deleted post is a chain root, owned follow-up chain posts are also moved to Deleted in ThreadFlow (`cascadeDeletedCount` in response).
   - UI now warns if moved locally but remote Threads delete failed.
 
 ### 4) Compose scheduled edit flow
@@ -131,6 +139,33 @@ This section is the fastest way for the next agent to understand the current pro
 - Threads API helper (`server/threads.ts`)
   - Updated delete endpoint call to include encoded post id and access token query parameter for better compatibility.
 
+### 7) Latest updates (March 7, 2026)
+
+- Dashboard (`client/src/pages/dashboard.tsx`)
+  - Reduced vertical padding of the 4 stats cards row (Scheduled Posts, Active Queues, Follow-Ups, Published) to reduce card height without changing typography/icon sizing.
+
+- Thread Chain (`client/src/pages/ThreadChain.tsx`)
+  - Added root-only APP TAG support in chain composer.
+  - Root APP TAG now supports:
+    - Add button
+    - Enter/comma to add
+    - chip list with remove
+    - max 5 tags
+  - APP TAG payload is sent with chain publish request.
+
+- Thread Chain publish backend (`server/routes.ts`)
+  - `POST /api/thread-chain` now accepts optional `appTag`.
+  - Only the first successfully published chain post (root) is saved with APP TAG.
+  - Reply/follow-up chain posts are saved with `appTag: null` by design.
+
+- My Content filtering (`server/storage.ts`, `client/src/pages/MyContent.tsx`)
+  - `GET /api/posts/my-content` now returns only published posts with a valid `threadsPostId`.
+  - Tag sidebar now hides tags with zero active post count.
+
+- Root-delete cascade (`server/routes.ts`)
+  - Deleting a chain root from My Content now cascades local soft-delete for owned replies under the same root.
+  - API response from `DELETE /api/posts/:postId` includes `cascadeDeletedCount`.
+
 ---
 
 ## Core Features
@@ -140,6 +175,7 @@ This section is the fastest way for the next agent to understand the current pro
   - Manual credentials (`/api/auth/connect-threads`).
   - OAuth redirect flow (`/api/auth/threads/connect`, `/api/auth/threads/callback`).
 - Publish now, schedule, bulk queue, follow-up, thread chain.
+- PWA-ready client (manifest, service worker generation, install prompt banner on mobile).
 - Recent posts with engagement, repost, quote.
 - Analytics and audience persona.
 - Reply center and comments actions.
@@ -261,6 +297,10 @@ All endpoints below require `Authorization: Bearer <jwt>` unless noted.
 - `DELETE /api/posts/:postId`
 - `GET /api/posts/deleted`
 
+Behavior notes:
+- `GET /api/posts/my-content` returns only published + non-deleted posts with `threadsPostId`.
+- `DELETE /api/posts/:postId` may return `{ cascadeDeletedCount }` when deleting a chain root.
+
 ### Analytics and community
 
 - `GET /api/analytics`
@@ -282,6 +322,9 @@ All endpoints below require `Authorization: Bearer <jwt>` unless noted.
 - `POST /api/follow-ups`
 - `DELETE /api/follow-ups/:id`
 - `POST /api/thread-chain`
+
+Behavior notes:
+- `POST /api/thread-chain` accepts optional `appTag`; APP_TAG is saved on the root post only.
 
 ---
 

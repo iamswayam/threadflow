@@ -1798,6 +1798,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     if (!post) return res.status(404).json({ error: "Post not found" });
 
+    let cascadeDeletedCount = 0;
+    let cascadeTargetPostIds: string[] = [];
+    if (post.threadsPostId && user?.threadsAccessToken) {
+      try {
+        const conversationReplies = await threads.getConversationReplies(
+          user.threadsAccessToken,
+          post.threadsPostId,
+          500,
+        );
+        const ownedDescendantIds = new Set(
+          conversationReplies
+            .filter(
+              (reply) =>
+                typeof reply?.id === "string" &&
+                reply.is_reply_owned_by_me === true &&
+                reply.root_post?.id === post.threadsPostId,
+            )
+            .map((reply) => String(reply.id)),
+        );
+
+        if (ownedDescendantIds.size > 0) {
+          cascadeTargetPostIds = activePosts
+            .filter(
+              (candidate) =>
+                candidate.id !== post.id &&
+                typeof candidate.threadsPostId === "string" &&
+                ownedDescendantIds.has(candidate.threadsPostId),
+            )
+            .map((candidate) => candidate.id);
+        }
+      } catch {
+        // Best-effort chain cascade detection.
+      }
+    }
+
     let deletedFromThreads = false;
     if (post.threadsPostId && user?.threadsAccessToken) {
       try {
@@ -1811,7 +1846,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     await storage.markPostDeleted(post.id, userId);
-    res.json({ success: true, deletedFromThreads });
+    for (const childPostId of cascadeTargetPostIds) {
+      await storage.markPostDeleted(childPostId, userId);
+      cascadeDeletedCount++;
+    }
+
+    res.json({ success: true, deletedFromThreads, cascadeDeletedCount });
   });
 
   // â”€â”€ Bulk Queues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1877,7 +1917,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
-    const { posts, topicTag } = req.body;
+    const { posts, topicTag, appTag: rawAppTag } = req.body;
     if (!posts || !Array.isArray(posts) || posts.length === 0)
       return res.status(400).json({ error: "Posts array is required" });
     if (posts.length > 20) return res.status(400).json({ error: "Max 20 posts per chain" });
@@ -1899,12 +1939,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const resolvedTopic = topicTag || user.defaultTopic || undefined;
+    const rootAppTag = normalizeAppTag(rawAppTag) || null;
     try {
       const profile = await threads.getProfile(user.threadsAccessToken);
       const publishedIds: string[] = [];
       let previousPostId: string | undefined = undefined;
       let topicTagAppliedCount = 0;
       let topicTagSkippedCount = 0;
+      let rootAppTagApplied = false;
 
       for (let i = 0; i < normalizedPosts.length; i++) {
         const text = normalizedPosts[i].content;
@@ -1936,9 +1978,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (applyTopicTag) topicTagAppliedCount++;
         const publishedAt = new Date();
         const dnaSignals = extractDnaSignals(text, publishedAt, null);
+        const appTagForPost = !rootAppTagApplied ? rootAppTag : null;
         const publishedPost = await storage.createScheduledPost(userId, {
           content: text,
           scheduledAt: publishedAt,
+          appTag: appTagForPost,
           topicTag: applyTopicTag ? resolvedTopic || null : null,
           mediaUrl: null,
           mediaType: "TEXT",
@@ -1946,6 +1990,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           threadsPostId: postId,
           ...dnaSignals,
         } as any);
+        if (!rootAppTagApplied) {
+          rootAppTagApplied = true;
+        }
         scheduleInsightsRefresh(user.threadsAccessToken, publishedPost.id, postId);
         publishedIds.push(postId);
         previousPostId = postId;

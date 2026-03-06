@@ -1384,7 +1384,7 @@ export default function Dashboard() {
                 <stat.icon className={`w-4 h-4 ${stat.color}`} />
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="pb-4">
               {loadingScheduled || loadingBulk || loadingFollowUps ? (
                 <Skeleton className="h-8 w-16" />
               ) : (

@@ -361,29 +361,28 @@ export class DatabaseStorage implements IStorage {
     userId: string,
     appTag: string | null
   ): Promise<ScheduledPost[]> {
+    const activePublishedPosts = await db
+      .select()
+      .from(scheduledPosts)
+      .where(
+        and(
+          eq(scheduledPosts.userId, userId),
+          eq(scheduledPosts.status, "published"),
+          isNotNull(scheduledPosts.threadsPostId),
+        ),
+      )
+      .orderBy(desc(scheduledPosts.createdAt));
+
     if (appTag) {
       const requestedTag = appTag.trim();
-      const allPosts = await db
-        .select()
-        .from(scheduledPosts)
-        .where(and(
-          eq(scheduledPosts.userId, userId),
-          ne(scheduledPosts.status, "deleted"),
-        ))
-        .orderBy(desc(scheduledPosts.createdAt));
-      return allPosts.filter((p) =>
+      return activePublishedPosts.filter((p) =>
         p.appTag
           ?.split(",")
           .map((t) => t.trim())
           .includes(requestedTag),
       );
     }
-    return db.select().from(scheduledPosts)
-      .where(and(
-        eq(scheduledPosts.userId, userId),
-        ne(scheduledPosts.status, "deleted"),
-      ))
-      .orderBy(desc(scheduledPosts.createdAt));
+    return activePublishedPosts;
   }
 
   async getPostsNeedingInsightsRefresh(userId: string): Promise<ScheduledPost[]> {

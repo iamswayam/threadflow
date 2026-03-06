@@ -243,6 +243,7 @@ export default function MyContent() {
 
   const getTagCount = (tag: string) =>
     allPosts.filter((p) => p.appTag?.split(",").map((t) => t.trim()).includes(tag)).length;
+  const visibleTags = tags.filter((tag) => getTagCount(tag) > 0);
   const totalPosts = allPosts.length;
   const deletedCount = deletedPosts.length;
 
@@ -307,10 +308,10 @@ export default function MyContent() {
                   <Skeleton className="h-8 w-full" />
                   <Skeleton className="h-8 w-full" />
                 </div>
-              ) : tags.length === 0 ? (
+              ) : visibleTags.length === 0 ? (
                 <p className="text-xs text-muted-foreground py-4 text-center">No tags yet</p>
               ) : (
-                tags.map((tag) => (
+                visibleTags.map((tag) => (
                   <Button
                     key={tag}
                     variant={selectedTag === tag ? "default" : "ghost"}

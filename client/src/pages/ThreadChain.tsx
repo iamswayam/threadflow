@@ -38,6 +38,8 @@ export default function ThreadChain() {
     { id: "3", content: "", useTopicTag: true },
   ]);
   const [topicInput, setTopicInput] = useState(user?.defaultTopic || "");
+  const [rootAppTags, setRootAppTags] = useState<string[]>([]);
+  const [rootAppTagInput, setRootAppTagInput] = useState("");
   const [applyTopicToAll, setApplyTopicToAll] = useState(true);
   const [showTopicSuggestions, setShowTopicSuggestions] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -108,6 +110,20 @@ export default function ThreadChain() {
     setPosts(prev => prev.map(p => ({ ...p, useTopicTag: enabled })));
   };
 
+  const addRootAppTag = (rawTagValue: string) => {
+    const rawTag = rawTagValue.trim();
+    if (!rawTag || rootAppTags.length >= 5) return;
+
+    const nextTag = rawTag.charAt(0).toUpperCase() + rawTag.slice(1);
+    if (rootAppTags.some((tag) => tag.toLowerCase() === nextTag.toLowerCase())) {
+      setRootAppTagInput("");
+      return;
+    }
+
+    setRootAppTags((prev) => [...prev, nextTag]);
+    setRootAppTagInput("");
+  };
+
   const handleDragStart = (e: React.DragEvent, idx: number) => {
     setDragIndex(idx);
     e.dataTransfer.effectAllowed = "move";
@@ -141,6 +157,7 @@ export default function ThreadChain() {
       const result = await apiRequest("POST", "/api/thread-chain", {
         posts: validPosts.map((p) => ({ content: p.content.trim(), useTopicTag: p.useTopicTag })),
         topicTag: topicInput.trim() || undefined,
+        appTag: rootAppTags.join(",") || undefined,
       });
 
       setPublishedCount(result.count);
@@ -158,6 +175,8 @@ export default function ThreadChain() {
         { id: "3", content: "", useTopicTag: applyTopicToAll },
       ]);
       setTopicInput(user?.defaultTopic || "");
+      setRootAppTags([]);
+      setRootAppTagInput("");
     } catch (err: any) {
       const msg = err.message?.includes(":") ? err.message.split(":").slice(1).join(":").trim() : err.message;
       toast({ title: "Failed to publish chain", description: msg, variant: "destructive" });
@@ -259,6 +278,66 @@ export default function ThreadChain() {
                       {post.content.length}/{MAX_CHARS}
                     </span>
                   </div>
+                  {idx === 0 ? (
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                        <span className="text-xs font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">APP TAG</span>
+                        <span className="text-xs text-muted-foreground font-normal">Root post only (used in My Content)</span>
+                      </label>
+                      {rootAppTags.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5 mb-1.5">
+                          {rootAppTags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
+                            >
+                              {tag}
+                              <button
+                                type="button"
+                                onClick={() => setRootAppTags((prev) => prev.filter((item) => item !== tag))}
+                                className="ml-0.5 hover:text-destructive transition-colors"
+                              >
+                                x
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {rootAppTags.length < 5 ? (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/20 focus-within:border-primary/50 transition-colors">
+                          <input
+                            className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
+                            placeholder="e.g. Saturn"
+                            value={rootAppTagInput}
+                            onChange={(e) => setRootAppTagInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if ((e.key === "Enter" || e.key === ",") && rootAppTagInput.trim()) {
+                                e.preventDefault();
+                                addRootAppTag(rootAppTagInput);
+                                return;
+                              }
+                              if (e.key === "Backspace" && !rootAppTagInput && rootAppTags.length > 0) {
+                                setRootAppTags((prev) => prev.slice(0, -1));
+                              }
+                            }}
+                            maxLength={60}
+                            data-testid="input-chain-root-app-tag"
+                          />
+                          {rootAppTagInput.trim() ? (
+                            <button
+                              type="button"
+                              className="text-xs text-primary hover:text-primary/80 font-medium"
+                              onClick={() => addRootAppTag(rootAppTagInput)}
+                            >
+                              Add
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">Maximum 5 tags</p>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               ))}
 
