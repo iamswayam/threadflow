@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
+import { useLocation } from "wouter";
 import type { LucideIcon } from "lucide-react";
 import { Calendar, Hash, Info, Link2, Send, Sparkles, X } from "lucide-react";
 import { format } from "date-fns";
@@ -21,6 +22,7 @@ import { cn } from "@/lib/utils";
 import type { ScheduledPost } from "@shared/schema";
 
 const MAX_CHARS = 500;
+const THREADCHAIN_PREFILL_KEY = "threadchain_prefill";
 
 const POPULAR_TOPICS = [
   "Astrology Threads", "Motivation Threads", "Business Threads",
@@ -39,6 +41,13 @@ const composeSchema = z.object({
 });
 
 type ComposeForm = z.infer<typeof composeSchema>;
+
+type RhythmState = {
+  counterClass: string;
+  barClass: string;
+  label: string | null;
+  labelClass: string;
+};
 
 function toDateTimeLocalString(date: Date): string {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -61,6 +70,131 @@ function getSmartDefaultScheduleTime(now = new Date()): Date {
 
   next.setHours(next.getHours() + 1, 30, 0, 0);
   return next;
+}
+
+function getRhythmState(charCount: number): RhythmState {
+  if (charCount >= MAX_CHARS) {
+    return {
+      counterClass: "text-destructive",
+      barClass: "bg-destructive/80",
+      label: "At limit",
+      labelClass: "text-destructive",
+    };
+  }
+
+  if (charCount >= 400) {
+    return {
+      counterClass: "text-orange-400",
+      barClass: "bg-orange-400/60",
+      label: "Almost at limit",
+      labelClass: "text-orange-400",
+    };
+  }
+
+  if (charCount >= 281) {
+    return {
+      counterClass: "text-amber-400",
+      barClass: "bg-amber-400/60",
+      label: "Getting long",
+      labelClass: "text-amber-400",
+    };
+  }
+
+  if (charCount >= 150) {
+    return {
+      counterClass: "text-primary",
+      barClass: "bg-primary/60",
+      label: "âœ¦ Sweet spot",
+      labelClass: "text-primary",
+    };
+  }
+
+  if (charCount >= 100) {
+    return {
+      counterClass: "text-muted-foreground",
+      barClass: "bg-muted/50",
+      label: null,
+      labelClass: "text-muted-foreground",
+    };
+  }
+
+  return {
+    counterClass: "text-muted-foreground/50",
+    barClass: "bg-muted/30",
+    label: null,
+    labelClass: "text-muted-foreground/50",
+  };
+}
+
+function splitLongSegment(segment: string, maxChars = MAX_CHARS): string[] {
+  const words = segment.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    if (!current) {
+      current = word.length > maxChars ? word.slice(0, maxChars) : word;
+      continue;
+    }
+
+    const candidate = `${current} ${word}`;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+    } else {
+      chunks.push(current);
+      current = word.length > maxChars ? word.slice(0, maxChars) : word;
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function splitIntoThreadChunks(content: string, maxChars = MAX_CHARS): string[] {
+  const normalized = content.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const sentences = normalized
+    .split(/(?<=\.)\s+|(?<=\.)\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const units = sentences.length > 0 ? sentences : [normalized];
+  const chunks: string[] = [];
+  let current = "";
+
+  const pushUnit = (unit: string) => {
+    if (!current) {
+      current = unit;
+      return;
+    }
+
+    const candidate = `${current} ${unit}`.trim();
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      return;
+    }
+
+    chunks.push(current);
+    current = unit;
+  };
+
+  for (const unit of units) {
+    if (unit.length <= maxChars) {
+      pushUnit(unit);
+      continue;
+    }
+
+    const longChunks = splitLongSegment(unit, maxChars);
+    for (const longChunk of longChunks) {
+      pushUnit(longChunk);
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks.filter(Boolean);
 }
 
 type TestIds = {
@@ -106,6 +240,7 @@ export function PostComposerCard({
   showSchedule = true,
   testIds,
 }: PostComposerCardProps) {
+  const [, setLocation] = useLocation();
   const { toast } = useToast();
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -114,10 +249,27 @@ export function PostComposerCard({
   const [showTopicSuggestions, setShowTopicSuggestions] = useState(false);
   const [appTags, setAppTags] = useState<string[]>([]);
   const [appTagInput, setAppTagInput] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [isAppTagDropdownOpen, setIsAppTagDropdownOpen] = useState(false);
+  const [isSplitSuggestionDismissed, setIsSplitSuggestionDismissed] = useState(false);
+  const appTagContainerRef = useRef<HTMLDivElement | null>(null);
 
   const filteredTopics = POPULAR_TOPICS.filter((topic) =>
     topic.toLowerCase().includes(topicInput.toLowerCase()) && topic !== topicInput,
   );
+  const { data: existingTags = [] } = useQuery<string[]>({
+    queryKey: ["/api/posts/tags"],
+    queryFn: async () => {
+      try {
+        const payload = await apiRequest("GET", "/api/posts/tags");
+        if (!Array.isArray(payload)) return [];
+        return payload.filter((tag): tag is string => typeof tag === "string");
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 5 * 60 * 1000,
+  });
 
   const form = useForm<ComposeForm>({
     resolver: zodResolver(composeSchema),
@@ -131,6 +283,34 @@ export function PostComposerCard({
   const canShowMedia = mode === "full";
   const canShowSchedule = mode === "full" && showSchedule;
   const isEditingScheduled = Boolean(editingScheduledPost);
+  const rhythm = getRhythmState(charCount);
+  const progressWidth = Math.min((charCount / MAX_CHARS) * 100, 100);
+  const showSplitSuggestion = charCount > 450 && !isSplitSuggestionDismissed;
+  const appTagSuggestions = useMemo(() => {
+    const keyword = appTagInput.trim().toLowerCase();
+    if (!keyword) return [];
+
+    const added = new Set(appTags.map((tag) => tag.toLowerCase()));
+    const startsWith: string[] = [];
+    const includesMatch: string[] = [];
+
+    for (const rawTag of existingTags) {
+      const tag = rawTag.trim();
+      if (!tag) continue;
+      const lowerTag = tag.toLowerCase();
+      if (added.has(lowerTag)) continue;
+
+      if (lowerTag.startsWith(keyword)) {
+        startsWith.push(tag);
+      } else if (lowerTag.includes(keyword)) {
+        includesMatch.push(tag);
+      }
+    }
+
+    return Array.from(new Set([...startsWith, ...includesMatch])).slice(0, 5);
+  }, [appTagInput, appTags, existingTags]);
+  const showAppTagSuggestions =
+    isAppTagDropdownOpen && appTagInput.trim().length > 0 && appTagSuggestions.length > 0;
 
   const resetComposer = () => {
     form.reset();
@@ -138,11 +318,35 @@ export function PostComposerCard({
     setTopicInput(user?.defaultTopic || "");
     setAppTags([]);
     setAppTagInput("");
+    setHighlightedIndex(-1);
+    setIsAppTagDropdownOpen(false);
   };
 
   useEffect(() => {
     setTopicInput(user?.defaultTopic || "");
   }, [user?.defaultTopic]);
+
+  useEffect(() => {
+    if (charCount <= 450) {
+      setIsSplitSuggestionDismissed(false);
+    }
+  }, [charCount]);
+
+  useEffect(() => {
+    setHighlightedIndex(-1);
+  }, [appTagInput]);
+
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (!appTagContainerRef.current) return;
+      if (appTagContainerRef.current.contains(event.target as Node)) return;
+      setIsAppTagDropdownOpen(false);
+      setHighlightedIndex(-1);
+    };
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
 
   useEffect(() => {
     if (!injectedDraft?.text) return;
@@ -274,6 +478,61 @@ export function PostComposerCard({
     });
   };
 
+  const splitIntoThreadChain = () => {
+    const chunks = splitIntoThreadChunks(form.getValues("content"), MAX_CHARS);
+    if (chunks.length === 0) {
+      toast({
+        title: "Nothing to split",
+        description: "Write some content first before creating a Thread Chain.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    sessionStorage.setItem(THREADCHAIN_PREFILL_KEY, JSON.stringify(chunks));
+    setLocation("/chain");
+  };
+
+  const addAppTag = (rawTagValue: string) => {
+    const rawTag = rawTagValue.trim();
+    if (!rawTag || appTags.length >= 5) return;
+
+    const nextTag = rawTag.charAt(0).toUpperCase() + rawTag.slice(1);
+    if (appTags.some((tag) => tag.toLowerCase() === nextTag.toLowerCase())) {
+      return;
+    }
+
+    setAppTags((prev) => [...prev, nextTag]);
+    setAppTagInput("");
+    setIsAppTagDropdownOpen(false);
+    setHighlightedIndex(-1);
+  };
+
+  const renderSuggestionLabel = (tag: string) => {
+    const keyword = appTagInput.trim();
+    if (!keyword) return <span className="text-foreground">{tag}</span>;
+
+    const lowerTag = tag.toLowerCase();
+    const lowerKeyword = keyword.toLowerCase();
+    const matchIndex = lowerTag.indexOf(lowerKeyword);
+
+    if (matchIndex < 0) {
+      return <span className="text-foreground">{tag}</span>;
+    }
+
+    const before = tag.slice(0, matchIndex);
+    const match = tag.slice(matchIndex, matchIndex + keyword.length);
+    const after = tag.slice(matchIndex + keyword.length);
+
+    return (
+      <span>
+        <span className="text-foreground">{before}</span>
+        <span className="text-primary font-medium">{match}</span>
+        <span className="text-foreground">{after}</span>
+      </span>
+    );
+  };
+
   return (
     <Card className={cn(className)}>
       <CardHeader>
@@ -297,21 +556,120 @@ export function PostComposerCard({
                         placeholder="What's on your mind? Share your thread..."
                         className="resize-none min-h-[140px] text-base pr-16"
                         data-testid={testIds?.textarea}
+                        onKeyDown={(e) => {
+                          const textarea = e.currentTarget;
+                          const value = textarea.value;
+                          const selectionStart = textarea.selectionStart ?? 0;
+                          const selectionEnd = textarea.selectionEnd ?? 0;
+                          const isRangeSelection = selectionStart !== selectionEnd;
+                          const lineStart = value.lastIndexOf("\n", Math.max(selectionStart - 1, 0)) + 1;
+                          const lineEndIndex = value.indexOf("\n", selectionStart);
+                          const lineEnd = lineEndIndex === -1 ? value.length : lineEndIndex;
+                          const lineText = value.slice(lineStart, lineEnd);
+                          const lineBeforeCursor = value.slice(lineStart, selectionStart);
+
+                          const applyAutoInsert = (nextValue: string, cursorPosition: number) => {
+                            e.preventDefault();
+                            field.onChange(nextValue);
+                            requestAnimationFrame(() => {
+                              textarea.selectionStart = cursorPosition;
+                              textarea.selectionEnd = cursorPosition;
+                            });
+                          };
+
+                          if (!isRangeSelection && e.key === " ") {
+                            if ((lineBeforeCursor === "-" || lineBeforeCursor === "*") && lineText === lineBeforeCursor) {
+                              const nextValue = `${value.slice(0, lineStart)}â€¢ ${value.slice(selectionStart)}`;
+                              applyAutoInsert(nextValue, lineStart + 2);
+                              return;
+                            }
+
+                            if (lineBeforeCursor === "1." && lineText === lineBeforeCursor) {
+                              const nextValue = `${value.slice(0, lineStart)}1. ${value.slice(selectionStart)}`;
+                              applyAutoInsert(nextValue, lineStart + 3);
+                              return;
+                            }
+                          }
+
+                          if (isRangeSelection || e.key !== "Enter") return;
+
+                          const emptyBulletLine = /^â€¢\s*$/.test(lineText);
+                          if (emptyBulletLine) {
+                            const trailing = lineEndIndex === -1 ? "" : value.slice(lineEndIndex + 1);
+                            const nextValue = `${value.slice(0, lineStart)}\n${trailing}`;
+                            applyAutoInsert(nextValue, lineStart + 1);
+                            return;
+                          }
+
+                          const bulletWithContent = /^â€¢\s+\S+/.test(lineText);
+                          if (bulletWithContent && selectionStart === lineEnd) {
+                            const insertion = "\nâ€¢ ";
+                            const nextValue = `${value.slice(0, selectionStart)}${insertion}${value.slice(selectionEnd)}`;
+                            applyAutoInsert(nextValue, selectionStart + insertion.length);
+                            return;
+                          }
+
+                          const emptyNumberedMatch = lineText.match(/^(\d+)\.\s*$/);
+                          if (emptyNumberedMatch) {
+                            const trailing = lineEndIndex === -1 ? "" : value.slice(lineEndIndex + 1);
+                            const nextValue = `${value.slice(0, lineStart)}\n${trailing}`;
+                            applyAutoInsert(nextValue, lineStart + 1);
+                            return;
+                          }
+
+                          const numberedWithContent = lineText.match(/^(\d+)\.\s+\S+/);
+                          if (numberedWithContent && selectionStart === lineEnd) {
+                            const nextNumber = Number.parseInt(numberedWithContent[1], 10) + 1;
+                            const insertion = `\n${nextNumber}. `;
+                            const nextValue = `${value.slice(0, selectionStart)}${insertion}${value.slice(selectionEnd)}`;
+                            applyAutoInsert(nextValue, selectionStart + insertion.length);
+                          }
+                        }}
                         {...field}
                       />
-                      <span
-                        className={`absolute bottom-3 right-3 text-xs font-mono ${
-                          charCount > MAX_CHARS * 0.9
-                            ? charCount >= MAX_CHARS
-                              ? "text-destructive font-bold"
-                              : "text-amber-500"
-                            : "text-muted-foreground"
-                        }`}
-                      >
-                        {charCount}/{MAX_CHARS}
-                      </span>
                     </div>
                   </FormControl>
+                  <div className="mt-2 space-y-1.5">
+                    <div className="flex items-center justify-end gap-2">
+                      <span className={cn("text-xs font-mono transition-colors duration-200", rhythm.counterClass)}>
+                        {charCount}/{MAX_CHARS}
+                      </span>
+                      {rhythm.label ? (
+                        <span className={cn("text-xs transition-colors duration-200", rhythm.labelClass)}>
+                          {rhythm.label}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="h-0.5 w-full rounded-full bg-muted/20 overflow-hidden">
+                      <div
+                        className={cn("h-full rounded-full transition-all duration-200", rhythm.barClass)}
+                        style={{ width: `${progressWidth}%` }}
+                      />
+                    </div>
+                    <div
+                      className={cn(
+                        "overflow-hidden transition-all duration-200",
+                        showSplitSuggestion ? "max-h-24 opacity-100" : "max-h-0 opacity-0",
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+                        <span className="text-muted-foreground">* This is getting long - split into a Thread Chain?</span>
+                        <div className="flex items-center gap-2">
+                          <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={splitIntoThreadChain}>
+                            Split into Chain
+                          </Button>
+                          <button
+                            type="button"
+                            aria-label="Dismiss split suggestion"
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => setIsSplitSuggestionDismissed(true)}
+                          >
+                            x
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                   <FormMessage />
                 </FormItem>
               )}
@@ -399,7 +757,7 @@ export function PostComposerCard({
                       <Info className="w-3 h-3 text-muted-foreground/50 hover:text-muted-foreground cursor-help" />
                     </TooltipTrigger>
                     <TooltipContent side="top" className="max-w-xs text-xs">
-                      APP Tag is your personal internal label — it is never posted to Threads and nobody else can see it. Use it to
+                      APP Tag is your personal internal label â€” it is never posted to Threads and nobody else can see it. Use it to
                       organize your content by theme (e.g. Saturn, Hooks, Promotion) so you can track which topics perform best in
                       My Content.
                     </TooltipContent>
@@ -428,44 +786,94 @@ export function PostComposerCard({
               ) : null}
 
               {appTags.length < 5 ? (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/20 focus-within:border-primary/50 transition-colors">
-                  <input
-                    className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
-                    placeholder="Add a personal tag"
-                    value={appTagInput}
-                    onChange={(e) => setAppTagInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if ((e.key === "Enter" || e.key === ",") && appTagInput.trim()) {
-                        e.preventDefault();
-                        const rawTag = appTagInput.trim();
-                        const nextTag = rawTag.charAt(0).toUpperCase() + rawTag.slice(1);
-                        if (!appTags.includes(nextTag) && appTags.length < 5) {
-                          setAppTags((prev) => [...prev, nextTag]);
+                <div ref={appTagContainerRef} className="relative">
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-muted/20 focus-within:border-primary/50 transition-colors">
+                    <input
+                      className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground"
+                      placeholder="Add a personal tag"
+                      value={appTagInput}
+                      onFocus={() => {
+                        if (appTagInput.trim()) {
+                          setIsAppTagDropdownOpen(true);
                         }
-                        setAppTagInput("");
-                      }
-                      if (e.key === "Backspace" && !appTagInput && appTags.length > 0) {
-                        setAppTags((prev) => prev.slice(0, -1));
-                      }
-                    }}
-                    maxLength={60}
-                    disabled={!user?.threadsAccessToken}
-                  />
-                  {appTagInput.trim() ? (
-                    <button
-                      type="button"
-                      className="text-xs text-primary hover:text-primary/80 font-medium"
-                      onClick={() => {
-                        const rawTag = appTagInput.trim();
-                        const nextTag = rawTag.charAt(0).toUpperCase() + rawTag.slice(1);
-                        if (!appTags.includes(nextTag) && appTags.length < 5) {
-                          setAppTags((prev) => [...prev, nextTag]);
-                        }
-                        setAppTagInput("");
                       }}
-                    >
-                      Add
-                    </button>
+                      onChange={(e) => {
+                        setAppTagInput(e.target.value);
+                        setIsAppTagDropdownOpen(true);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "ArrowDown" && showAppTagSuggestions) {
+                          e.preventDefault();
+                          setHighlightedIndex((prev) =>
+                            prev >= appTagSuggestions.length - 1 ? 0 : prev + 1,
+                          );
+                          return;
+                        }
+
+                        if (e.key === "ArrowUp" && showAppTagSuggestions) {
+                          e.preventDefault();
+                          setHighlightedIndex((prev) =>
+                            prev <= 0 ? appTagSuggestions.length - 1 : prev - 1,
+                          );
+                          return;
+                        }
+
+                        if (e.key === "Escape" && isAppTagDropdownOpen) {
+                          e.preventDefault();
+                          setIsAppTagDropdownOpen(false);
+                          setHighlightedIndex(-1);
+                          return;
+                        }
+
+                        if (e.key === "Enter" && showAppTagSuggestions && highlightedIndex >= 0) {
+                          e.preventDefault();
+                          addAppTag(appTagSuggestions[highlightedIndex]);
+                          return;
+                        }
+
+                        if ((e.key === "Enter" || e.key === ",") && appTagInput.trim()) {
+                          e.preventDefault();
+                          addAppTag(appTagInput);
+                          return;
+                        }
+
+                        if (e.key === "Backspace" && !appTagInput && appTags.length > 0) {
+                          setAppTags((prev) => prev.slice(0, -1));
+                        }
+                      }}
+                      maxLength={60}
+                      disabled={!user?.threadsAccessToken}
+                    />
+                    {appTagInput.trim() ? (
+                      <button
+                        type="button"
+                        className="text-xs text-primary hover:text-primary/80 font-medium"
+                        onClick={() => addAppTag(appTagInput)}
+                      >
+                        Add
+                      </button>
+                    ) : null}
+                  </div>
+                  {showAppTagSuggestions ? (
+                    <div className="absolute top-full left-0 right-0 z-50 mt-1 w-full max-h-40 overflow-y-auto rounded-md border border-border bg-popover shadow-lg">
+                      {appTagSuggestions.map((tag, index) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          className={cn(
+                            "w-full px-3 py-2 text-sm cursor-pointer flex items-center gap-2 hover:bg-accent text-left",
+                            index === highlightedIndex ? "bg-accent" : "",
+                          )}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            addAppTag(tag);
+                          }}
+                        >
+                          <Hash className="w-3 h-3 text-primary" />
+                          {renderSuggestionLabel(tag)}
+                        </button>
+                      ))}
+                    </div>
                   ) : null}
                 </div>
               ) : null}
@@ -722,3 +1130,5 @@ export function PostComposerCard({
     </Card>
   );
 }
+
+

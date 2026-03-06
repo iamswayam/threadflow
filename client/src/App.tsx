@@ -1,4 +1,5 @@
 import { Switch, Route, useLocation, Redirect } from "wouter";
+import { useEffect, useState } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -27,6 +28,13 @@ import Analytics from "@/pages/Analytics"; // ✅ NEW
 import MyContent from "@/pages/MyContent"; // NEW
 import { Bell } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
+
+const INSTALL_DISMISS_KEY = "threadflow_pwa_dismissed";
 
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
@@ -181,6 +189,82 @@ function AuthGuard() {
   return <AppLayout />;
 }
 
+function InstallPromptBanner() {
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const isMobile = window.innerWidth < 768;
+    const isStandalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+    const isDismissed = localStorage.getItem(INSTALL_DISMISS_KEY) === "true";
+
+    if (!isMobile || isStandalone || isDismissed) return;
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setDeferredPrompt(event as BeforeInstallPromptEvent);
+      setIsVisible(true);
+    };
+
+    const handleAppInstalled = () => {
+      setDeferredPrompt(null);
+      setIsVisible(false);
+    };
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt as EventListener);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt as EventListener);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, []);
+
+  const handleDismiss = () => {
+    localStorage.setItem(INSTALL_DISMISS_KEY, "true");
+    setIsVisible(false);
+  };
+
+  const handleInstall = async () => {
+    if (!deferredPrompt) return;
+    await deferredPrompt.prompt();
+    await deferredPrompt.userChoice.catch(() => null);
+    setDeferredPrompt(null);
+    setIsVisible(false);
+  };
+
+  if (!isVisible || !deferredPrompt) return null;
+
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-primary/30 bg-background/95 md:hidden">
+      <div className="mx-auto flex max-w-screen-sm items-center gap-3 px-4 py-3">
+        <p className="flex-1 text-xs text-muted-foreground">
+          Add ThreadFlow to your home screen for the best experience
+        </p>
+        <Button
+          size="sm"
+          className="h-7 bg-primary/90 px-3 text-xs text-black hover:bg-primary"
+          onClick={() => void handleInstall()}
+        >
+          Add
+        </Button>
+        <button
+          type="button"
+          aria-label="Dismiss install prompt"
+          onClick={handleDismiss}
+          className="h-7 w-7 text-sm text-muted-foreground hover:text-foreground"
+        >
+          &times;
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -188,6 +272,7 @@ function App() {
         <ThemeProvider>
           <AuthProvider>
             <AuthGuard />
+            <InstallPromptBanner />
             <Toaster />
           </AuthProvider>
         </ThemeProvider>

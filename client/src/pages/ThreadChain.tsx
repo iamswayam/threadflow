@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 
 const MAX_CHARS = 500;
+const THREADCHAIN_PREFILL_KEY = "threadchain_prefill";
 
 interface ChainPost {
   id: string;
@@ -42,6 +43,40 @@ export default function ThreadChain() {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [publishedCount, setPublishedCount] = useState(0);
   const [isPublishing, setIsPublishing] = useState(false);
+
+  useEffect(() => {
+    const serialized = sessionStorage.getItem(THREADCHAIN_PREFILL_KEY);
+    if (!serialized) return;
+
+    try {
+      const parsed = JSON.parse(serialized);
+      if (!Array.isArray(parsed)) return;
+
+      const prefilled = parsed
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean)
+        .slice(0, 20);
+
+      if (prefilled.length === 0) return;
+
+      setPosts(
+        prefilled.map((content, index) => ({
+          id: `prefill-${Date.now()}-${index + 1}`,
+          content,
+          useTopicTag: true,
+        })),
+      );
+
+      toast({
+        title: "Thread Chain prefilled",
+        description: `${prefilled.length} post${prefilled.length === 1 ? "" : "s"} imported from composer.`,
+      });
+    } catch {
+      // Ignore invalid prefill payload.
+    } finally {
+      sessionStorage.removeItem(THREADCHAIN_PREFILL_KEY);
+    }
+  }, [toast]);
 
   const filteredTopics = POPULAR_TOPICS.filter(t =>
     t.toLowerCase().includes(topicInput.toLowerCase()) && t !== topicInput
