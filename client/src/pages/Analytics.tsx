@@ -627,6 +627,7 @@ export default function Analytics() {
     items: PersonaBreakdownItem[],
     totalFollowers: number,
     emptyText: string,
+    scrollable = false,
   ) => {
     return (
       <Card>
@@ -642,23 +643,39 @@ export default function Analytics() {
           {items.length === 0 ? (
             <p className="text-sm text-muted-foreground">{emptyText}</p>
           ) : (
-            <div className="space-y-2.5">
-              {items.map((item) => (
-                <div key={`${title}-${item.label}`} className="space-y-1">
-                  <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="truncate text-foreground">{item.label}</span>
-                    <span className="text-muted-foreground tabular-nums">
-                      {item.value.toLocaleString()} followers ({item.sharePct.toFixed(1)}%)
-                    </span>
+            <div className={scrollable ? "relative" : undefined}>
+              <div
+                className={
+                  scrollable
+                    ? "h-[220px] overflow-y-auto pr-1 space-y-2.5 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[rgba(255,255,255,0.1)] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb:hover]:bg-[rgba(255,255,255,0.2)]"
+                    : "space-y-2.5"
+                }
+                style={
+                  scrollable
+                    ? { scrollbarWidth: "thin", scrollbarColor: "transparent transparent" }
+                    : undefined
+                }
+              >
+                {items.map((item) => (
+                  <div key={`${title}-${item.label}`} className="space-y-1">
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="truncate text-foreground">{item.label}</span>
+                      <span className="text-muted-foreground tabular-nums">
+                        {item.value.toLocaleString()} followers ({item.sharePct.toFixed(1)}%)
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full bg-primary/80 rounded-full"
+                        style={{ width: `${Math.max(Math.min(item.sharePct, 100), 0)}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full bg-primary/80 rounded-full"
-                      style={{ width: `${Math.max(Math.min(item.sharePct, 100), 0)}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
+              {scrollable ? (
+                <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-card to-transparent pointer-events-none" />
+              ) : null}
             </div>
           )}
         </CardContent>
@@ -1059,8 +1076,8 @@ export default function Analytics() {
               </Card>
 
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                {renderBreakdownCard("Top Countries", personaCountryItems, totalCountryFollowers, "No country data")}
-                {renderBreakdownCard("Top Cities", personaCityItems, totalCityFollowers, "No city data")}
+                {renderBreakdownCard("Top Countries", personaCountryItems, totalCountryFollowers, "No country data", true)}
+                {renderBreakdownCard("Top Cities", personaCityItems, totalCityFollowers, "No city data", true)}
                 {renderBreakdownCard("Age Mix", personaAgeItems, totalAgeFollowers, "No age data")}
                 {renderBreakdownCard("Gender Mix", personaGenderItems, totalGenderFollowers, "No gender data")}
               </div>
