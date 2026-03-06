@@ -1160,6 +1160,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // â”€â”€ Scheduling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   app.get("/api/analytics/persona", requireAuth, async (req, res) => {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.set("Pragma", "no-cache");
+
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
     if (!user?.threadsAccessToken) return res.status(401).json({ error: "NO_TOKEN" });
@@ -1224,7 +1227,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         throw err;
       }
 
-      const demographics = { countries, cities, ages, genders };
+      const withSharePct = (values: threads.FollowerDemographicEntry[]) => {
+        const total = values.reduce((sum, item) => sum + item.value, 0);
+        return values.map((item) => ({
+          ...item,
+          sharePct: total > 0 ? Math.round((item.value / total) * 1000) / 10 : 0,
+        }));
+      };
+
+      const demographics = {
+        countries: withSharePct(countries),
+        cities: withSharePct(cities),
+        ages: withSharePct(ages),
+        genders: withSharePct(genders),
+      };
       const hasAnyDemographics = [countries, cities, ages, genders].some((list) => list.length > 0);
       if (!hasAnyDemographics) {
         return res.json({
@@ -1280,10 +1296,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const buildSegments = (
         segmentType: "country" | "city" | "age" | "gender",
         values: threads.FollowerDemographicEntry[],
-        topN: number,
+        topN?: number,
       ) => {
         const total = values.reduce((sum, item) => sum + item.value, 0);
-        return values.slice(0, topN).map((item) => ({
+        const topItems = typeof topN === "number" ? values.slice(0, topN) : values;
+        return topItems.map((item) => ({
           segmentType,
           label: item.label,
           value: item.value,
@@ -1293,10 +1310,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       };
 
       const segments = [
-        ...buildSegments("country", countries, 2),
-        ...buildSegments("city", cities, 2),
-        ...buildSegments("age", ages, 2),
-        ...buildSegments("gender", genders, 2),
+        ...buildSegments("country", countries, 5),
+        ...buildSegments("city", cities, 5),
+        ...buildSegments("age", ages),
+        ...buildSegments("gender", genders),
       ];
 
       res.json({

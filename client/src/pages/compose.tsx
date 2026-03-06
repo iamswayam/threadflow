@@ -34,8 +34,11 @@ export default function Compose() {
   });
 
   const pending = scheduled.filter((post) => post.status === "pending");
-  const published = scheduled.filter((post) => post.status !== "pending");
-  const editingScheduledPost = pending.find((post) => post.id === editingScheduledId) || null;
+  const failed = scheduled.filter((post) => post.status === "failed");
+  const published = scheduled.filter((post) => post.status !== "pending" && post.status !== "failed");
+  const editingScheduledPost =
+    scheduled.find((post) => post.id === editingScheduledId && (post.status === "pending" || post.status === "failed")) ||
+    null;
 
   useEffect(() => {
     if (!editingScheduledId) return;
@@ -79,59 +82,117 @@ export default function Compose() {
                 <Clock className="w-4 h-4 text-primary" />
                 Scheduled Queue
               </CardTitle>
-              <CardDescription>{pending.length} post{pending.length !== 1 ? "s" : ""} pending</CardDescription>
+              <CardDescription>
+                {pending.length} pending
+                {failed.length > 0 ? ` · ${failed.length} failed` : ""}
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
               {isLoading ? (
                 <div className="space-y-2">{[1, 2].map((i) => <Skeleton key={i} className="h-16 w-full" />)}</div>
-              ) : pending.length === 0 ? (
+              ) : pending.length === 0 && failed.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-8 text-center">
                   <Clock className="w-7 h-7 text-muted-foreground mb-2" />
                   <p className="text-sm text-muted-foreground">No scheduled posts</p>
                 </div>
               ) : (
-                pending.map((post) => (
-                  <div
-                    key={post.id}
-                    className={`p-3 rounded-md border space-y-2 ${
-                      editingScheduledId === post.id ? "border-primary/60 bg-primary/5" : "border-border"
-                    }`}
-                    data-testid={`card-scheduled-${post.id}`}
-                  >
-                    <p className="text-sm text-foreground line-clamp-2">{post.content}</p>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <StatusIcon status={post.status} />
-                        <span>{format(new Date(post.scheduledAt), "MMM d, h:mm a")}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => setEditingScheduledId(post.id)}
-                          disabled={deleteMutation.isPending}
-                          data-testid={`button-edit-scheduled-${post.id}`}
-                        >
-                          <Pencil className="w-3.5 h-3.5 text-primary" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => {
-                            if (editingScheduledId === post.id) {
-                              setEditingScheduledId(null);
-                            }
-                            deleteMutation.mutate(post.id);
-                          }}
-                          disabled={deleteMutation.isPending}
-                          data-testid={`button-delete-scheduled-${post.id}`}
-                        >
-                          <Trash2 className="w-3.5 h-3.5 text-destructive" />
-                        </Button>
+                <>
+                  {pending.map((post) => (
+                    <div
+                      key={post.id}
+                      className={`p-3 rounded-md border space-y-2 ${
+                        editingScheduledId === post.id ? "border-primary/60 bg-primary/5" : "border-border"
+                      }`}
+                      data-testid={`card-scheduled-${post.id}`}
+                    >
+                      <p className="text-sm text-foreground line-clamp-2">{post.content}</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <StatusIcon status={post.status} />
+                          <span>{format(new Date(post.scheduledAt), "MMM d, h:mm a")}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => setEditingScheduledId(post.id)}
+                            disabled={deleteMutation.isPending}
+                            data-testid={`button-edit-scheduled-${post.id}`}
+                          >
+                            <Pencil className="w-3.5 h-3.5 text-primary" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => {
+                              if (editingScheduledId === post.id) {
+                                setEditingScheduledId(null);
+                              }
+                              deleteMutation.mutate(post.id);
+                            }}
+                            disabled={deleteMutation.isPending}
+                            data-testid={`button-delete-scheduled-${post.id}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-destructive" />
+                          </Button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))
+                  ))}
+
+                  {failed.length > 0 ? (
+                    <div className="pt-2 space-y-2">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Failed Posts</div>
+                      {failed.map((post) => (
+                        <div
+                          key={post.id}
+                          className={`p-3 rounded-md border border-destructive/40 bg-destructive/5 space-y-2 ${
+                            editingScheduledId === post.id ? "ring-1 ring-primary/50" : ""
+                          }`}
+                          data-testid={`card-failed-${post.id}`}
+                        >
+                          <p className="text-sm text-foreground line-clamp-2">{post.content}</p>
+                          <div className="text-xs text-destructive">
+                            {post.errorMessage || "Failed to publish"}
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                              <StatusIcon status={post.status} />
+                              <span>{format(new Date(post.scheduledAt), "MMM d, h:mm a")}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs"
+                                onClick={() => setEditingScheduledId(post.id)}
+                                disabled={deleteMutation.isPending}
+                                data-testid={`button-edit-failed-${post.id}`}
+                              >
+                                <Pencil className="w-3.5 h-3.5 mr-1.5 text-primary" />
+                                Edit & Reschedule
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                onClick={() => {
+                                  if (editingScheduledId === post.id) {
+                                    setEditingScheduledId(null);
+                                  }
+                                  deleteMutation.mutate(post.id);
+                                }}
+                                disabled={deleteMutation.isPending}
+                                data-testid={`button-delete-failed-${post.id}`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5 text-destructive" />
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
               )}
             </CardContent>
           </Card>

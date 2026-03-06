@@ -345,37 +345,27 @@ function extractDemographicEntries(
     if (!label || typeof value !== "number" || !Number.isFinite(value) || value < 0) return;
     totals.set(label, (totals.get(label) || 0) + value);
   };
+  const toCount = (entry: any): number | null => {
+    const firstResult = Array.isArray(entry?.results) ? entry.results[0] : null;
+    if (typeof firstResult === "number" && Number.isFinite(firstResult)) return firstResult;
+    if (typeof entry?.value === "number" && Number.isFinite(entry.value)) return entry.value;
+    if (typeof firstResult?.value === "number" && Number.isFinite(firstResult.value)) return firstResult.value;
+    return null;
+  };
 
   for (const item of data?.data || []) {
-    const totalValue = item?.total_value;
-
-    // Some Graph responses flatten as key-value maps.
-    if (totalValue && typeof totalValue === "object" && !Array.isArray(totalValue)) {
-      for (const [key, value] of Object.entries(totalValue)) {
-        if (key === "breakdowns") continue;
-        if (typeof value === "number" && Number.isFinite(value)) {
-          add(normalizeDemographicLabel(key, breakdown), value);
-        }
-      }
-    }
-
-    const breakdowns = Array.isArray(totalValue?.breakdowns) ? totalValue.breakdowns : [];
-    for (const breakdown of breakdowns) {
-      const results = Array.isArray(breakdown?.results) ? breakdown.results : [];
-      for (const result of results) {
-        const label =
-          normalizeDemographicLabel(result?.dimension_values, breakdown) ||
-          normalizeDemographicLabel(result?.dimension_value, breakdown) ||
-          normalizeDemographicLabel(result?.label, breakdown) ||
-          normalizeDemographicLabel(result?.name, breakdown) ||
-          normalizeDemographicLabel(result?.key, breakdown);
-        const value =
-          typeof result?.value === "number"
-            ? result.value
-            : typeof result?.total_value?.value === "number"
-              ? result.total_value.value
-              : null;
-        add(label, value);
+    const breakdownGroups = Array.isArray(item?.total_value?.breakdowns) ? item.total_value.breakdowns : [];
+    for (const group of breakdownGroups) {
+      const entries = Array.isArray(group?.results) ? group.results : [];
+      for (const entry of entries) {
+        const dimensionValues = Array.isArray(entry?.dimension_values)
+          ? entry.dimension_values
+          : entry?.dimension_values != null
+            ? [entry.dimension_values]
+            : [];
+        const rawLabel = dimensionValues.length > 0 ? dimensionValues[0] : entry?.dimension_value;
+        const label = normalizeDemographicLabel(rawLabel, breakdown);
+        add(label, toCount(entry));
       }
     }
   }

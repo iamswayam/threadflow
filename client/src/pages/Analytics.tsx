@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -23,6 +23,7 @@ import {
   BarChart2,
   AlertTriangle,
   Crown,
+  RefreshCw,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Link } from "wouter";
@@ -83,6 +84,7 @@ interface AnalyticsData {
 interface PersonaBreakdownItem {
   label: string;
   value: number;
+  sharePct: number;
 }
 
 interface PersonaPost {
@@ -226,8 +228,13 @@ function collapsePersonaItems(
     const label = formatter(item.label || "").trim() || item.label;
     map.set(label, (map.get(label) || 0) + item.value);
   }
+  const total = Array.from(map.values()).reduce((sum, value) => sum + value, 0);
   return Array.from(map.entries())
-    .map(([label, value]) => ({ label, value }))
+    .map(([label, value]) => ({
+      label,
+      value,
+      sharePct: total > 0 ? Math.round((value / total) * 1000) / 10 : 0,
+    }))
     .sort((a, b) => b.value - a.value);
 }
 
@@ -384,6 +391,7 @@ function PostRow({ post, rank }: { post: AnalyticsData["posts"][0]; rank: number
 
 export default function Analytics() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [devProMode, setDevProMode] = useState(false);
   const [activeTab, setActiveTab] = useState<"performance" | "persona">("performance");
   const [chartMetric, setChartMetric] = useState<keyof PostInsights>("views");
@@ -452,8 +460,10 @@ export default function Analytics() {
     queryKey: ["/api/analytics/persona"],
     queryFn: () => apiRequest("GET", "/api/analytics/persona"),
     enabled: !!user?.threadsAccessToken && isProPlan,
-    staleTime: 5 * 60 * 1000,
-    placeholderData: (prev) => prev,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 
   if (!user?.threadsAccessToken) {
@@ -550,19 +560,28 @@ export default function Analytics() {
   const activeMetric = metricOptions.find((m) => m.key === chartMetric)!;
   const personaDemographics = personaData?.demographics;
   const personaCountryItems = useMemo(
-    () => collapsePersonaItems(personaDemographics?.countries || [], toCountryFullForm),
+    () =>
+      [...(personaDemographics?.countries || [])]
+        .map((item) => ({ ...item, label: toCountryFullForm(item.label) }))
+        .sort((a, b) => b.value - a.value),
     [personaDemographics?.countries],
   );
   const personaCityItems = useMemo(
-    () => collapsePersonaItems(personaDemographics?.cities || [], toCityFullForm),
+    () =>
+      [...(personaDemographics?.cities || [])]
+        .map((item) => ({ ...item, label: toCityFullForm(item.label) }))
+        .sort((a, b) => b.value - a.value),
     [personaDemographics?.cities],
   );
   const personaAgeItems = useMemo(
-    () => collapsePersonaItems(personaDemographics?.ages || [], (label) => label),
+    () => [...(personaDemographics?.ages || [])].sort((a, b) => b.value - a.value),
     [personaDemographics?.ages],
   );
   const personaGenderItems = useMemo(
-    () => collapsePersonaItems(personaDemographics?.genders || [], toGenderFullForm),
+    () =>
+      [...(personaDemographics?.genders || [])]
+        .map((item) => ({ ...item, label: toGenderFullForm(item.label) }))
+        .sort((a, b) => b.value - a.value),
     [personaDemographics?.genders],
   );
   const personaTopCountryEntry = personaCountryItems[0];
@@ -609,7 +628,6 @@ export default function Analytics() {
     totalFollowers: number,
     emptyText: string,
   ) => {
-    const maxValue = items[0]?.value || 1;
     return (
       <Card>
         <CardHeader className="pb-3">
@@ -625,19 +643,18 @@ export default function Analytics() {
             <p className="text-sm text-muted-foreground">{emptyText}</p>
           ) : (
             <div className="space-y-2.5">
-              {items.slice(0, 8).map((item) => (
+              {items.map((item) => (
                 <div key={`${title}-${item.label}`} className="space-y-1">
                   <div className="flex items-center justify-between gap-3 text-sm">
                     <span className="truncate text-foreground">{item.label}</span>
                     <span className="text-muted-foreground tabular-nums">
-                      {item.value.toLocaleString()} followers
-                      {totalFollowers > 0 ? ` (${((item.value / totalFollowers) * 100).toFixed(1)}%)` : ""}
+                      {item.value.toLocaleString()} followers ({item.sharePct.toFixed(1)}%)
                     </span>
                   </div>
                   <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                     <div
                       className="h-full bg-primary/80 rounded-full"
-                      style={{ width: `${Math.max((item.value / maxValue) * 100, 6)}%` }}
+                      style={{ width: `${Math.max(Math.min(item.sharePct, 100), 0)}%` }}
                     />
                   </div>
                 </div>
@@ -655,6 +672,17 @@ export default function Analytics() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold text-foreground">Analytics</h1>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => {
+                void queryClient.invalidateQueries({ queryKey: ["/api/analytics/persona"] });
+              }}
+            >
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+              Refresh
+            </Button>
             {activeTab === "performance" && (
               <Select value={analyticsWindow} onValueChange={(v) => setAnalyticsWindow(v as AnalyticsWindow)}>
                 <SelectTrigger className="w-32 h-8 text-xs">
@@ -1036,6 +1064,12 @@ export default function Analytics() {
                 {renderBreakdownCard("Age Mix", personaAgeItems, totalAgeFollowers, "No age data")}
                 {renderBreakdownCard("Gender Mix", personaGenderItems, totalGenderFollowers, "No gender data")}
               </div>
+
+              <Card>
+                <CardContent className="pt-4 pb-4 text-sm text-muted-foreground">
+                  Percentages calculated from follower sample. Total may differ from follower count due to Threads API demographic sampling.
+                </CardContent>
+              </Card>
 
               <Card>
                 <CardHeader className="pb-3">

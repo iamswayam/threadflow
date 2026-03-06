@@ -263,6 +263,7 @@ export function PostComposerCard({
     updateScheduledMutation.mutate({
       id: editingScheduledPost.id,
       data: {
+        status: "pending",
         content: data.content,
         mediaUrl: data.mediaUrl || null,
         mediaType: data.mediaType,
