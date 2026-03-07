@@ -48,6 +48,7 @@ export interface IStorage {
   updateScheduledPost(id: string, updates: Partial<ScheduledPost>): Promise<ScheduledPost>;
   deleteScheduledPost(id: string): Promise<void>;
   markPostDeleted(postId: string, userId: string): Promise<void>;
+  recoverDeletedPost(postId: string, userId: string): Promise<void>;
   getDeletedPosts(userId: string): Promise<ScheduledPost[]>;
   getPendingDueScheduledPosts(): Promise<(ScheduledPost & { userToken: string | null; userId: string | null })[]>;
 
@@ -78,6 +79,20 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  private async purgeExpiredDeletedPosts(userId: string): Promise<void> {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    await db
+      .delete(scheduledPosts)
+      .where(
+        and(
+          eq(scheduledPosts.userId, userId),
+          eq(scheduledPosts.status, "deleted"),
+          isNotNull(scheduledPosts.deletedAt),
+          lt(scheduledPosts.deletedAt, cutoff),
+        ),
+      );
+  }
+
   private isSameUtcDay(a: Date, b: Date): boolean {
     return (
       a.getUTCFullYear() === b.getUTCFullYear() &&
@@ -165,6 +180,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getScheduledPosts(userId: string): Promise<ScheduledPost[]> {
+    await this.purgeExpiredDeletedPosts(userId);
     return db.select().from(scheduledPosts).where(and(
       eq(scheduledPosts.userId, userId),
       ne(scheduledPosts.status, "deleted"),
@@ -197,7 +213,19 @@ export class DatabaseStorage implements IStorage {
         eq(scheduledPosts.userId, userId),
       ));
   }
+  async recoverDeletedPost(postId: string, userId: string): Promise<void> {
+    await this.purgeExpiredDeletedPosts(userId);
+    await db
+      .update(scheduledPosts)
+      .set({ status: "published", deletedAt: null })
+      .where(and(
+        eq(scheduledPosts.id, postId),
+        eq(scheduledPosts.userId, userId),
+        eq(scheduledPosts.status, "deleted"),
+      ));
+  }
   async getDeletedPosts(userId: string): Promise<ScheduledPost[]> {
+    await this.purgeExpiredDeletedPosts(userId);
     return db
       .select()
       .from(scheduledPosts)
@@ -340,6 +368,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserAppTags(userId: string): Promise<string[]> {
+    await this.purgeExpiredDeletedPosts(userId);
     const rows = await db
       .selectDistinct({ appTag: scheduledPosts.appTag })
       .from(scheduledPosts)
@@ -361,6 +390,7 @@ export class DatabaseStorage implements IStorage {
     userId: string,
     appTag: string | null
   ): Promise<ScheduledPost[]> {
+    await this.purgeExpiredDeletedPosts(userId);
     const activePublishedPosts = await db
       .select()
       .from(scheduledPosts)

@@ -1663,6 +1663,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(posts);
   });
 
+  app.post("/api/posts/:postId/recover", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const postId = Array.isArray(req.params.postId) ? req.params.postId[0] : req.params.postId;
+
+    const deletedPosts = await storage.getDeletedPosts(userId);
+    const post = deletedPosts.find((p) => p.id === postId);
+    if (!post) {
+      return res.status(404).json({ error: "Deleted post not found or already expired" });
+    }
+
+    await storage.recoverDeletedPost(postId, userId);
+    res.json({ success: true });
+  });
+
   app.get("/api/posts/dna-data", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const posts = await storage.getPostsWithDnaData(userId);

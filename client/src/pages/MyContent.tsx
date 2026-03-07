@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
 import {
   Hash,
   Calendar,
@@ -16,6 +17,8 @@ import {
   TrendingUp,
   Trash2,
   Crown,
+  Sparkles,
+  RotateCcw,
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -56,6 +59,10 @@ type PostWithInsights = ScheduledPost & {
   insights?: PostInsightMetrics | null;
 };
 
+type ContentListItem =
+  | { kind: "single"; post: PostWithInsights }
+  | { kind: "chain"; root: PostWithInsights; followUps: PostWithInsights[] };
+
 type TagInsights = {
   tag: string;
   totalPosts: number;
@@ -93,12 +100,79 @@ function getInsights(post: PostWithInsights): PostInsightMetrics {
   };
 }
 
+const CHAIN_MAX_GAP_MS = 2 * 60 * 1000;
+
+function getPostSortTime(post: PostWithInsights): number {
+  const raw = (post as any).createdAt ?? post.scheduledAt;
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function normalizeTopicTag(value: string | null | undefined): string {
+  return (value || "").trim().toLowerCase();
+}
+
+function hasAppTag(post: PostWithInsights): boolean {
+  return Boolean(post.appTag && post.appTag.trim().length > 0);
+}
+
+function buildChainAwareItems(posts: PostWithInsights[]): ContentListItem[] {
+  const items: ContentListItem[] = [];
+  let index = 0;
+
+  while (index < posts.length) {
+    const run: PostWithInsights[] = [posts[index]];
+    let cursor = index + 1;
+
+    while (cursor < posts.length) {
+      const previous = posts[cursor - 1];
+      const current = posts[cursor];
+      const gapMs = Math.abs(getPostSortTime(previous) - getPostSortTime(current));
+      const sameTopic = normalizeTopicTag(previous.topicTag) === normalizeTopicTag(current.topicTag);
+
+      if (gapMs <= CHAIN_MAX_GAP_MS && sameTopic) {
+        run.push(current);
+        cursor += 1;
+        continue;
+      }
+
+      break;
+    }
+
+    const root = run[run.length - 1];
+    const followUps = [...run.slice(0, -1)].reverse();
+    const rootHasTag = hasAppTag(root);
+    const followUpsHaveNoTags = followUps.every((post) => !hasAppTag(post));
+    const allPostsInRunHaveNoTag = run.every((post) => !hasAppTag(post));
+    const likelyChain =
+      run.length >= 3 &&
+      (
+        (rootHasTag && followUpsHaveNoTags) ||
+        // Legacy chains created before root APP_TAG support.
+        allPostsInRunHaveNoTag
+      );
+
+    if (likelyChain) {
+      items.push({ kind: "chain", root, followUps });
+      index += run.length;
+      continue;
+    }
+
+    items.push({ kind: "single", post: posts[index] });
+    index += 1;
+  }
+
+  return items;
+}
+
 export default function MyContent() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [confirmDeletePostId, setConfirmDeletePostId] = useState<string | null>(null);
   const [devProMode, setDevProMode] = useState(false);
+  const [tagSearchInput, setTagSearchInput] = useState("");
+  const [expandedChainRoots, setExpandedChainRoots] = useState<Record<string, boolean>>({});
 
   const isDeletedView = selectedTag === DELETED_TAG;
   const isProPlan = devProMode;
@@ -241,9 +315,31 @@ export default function MyContent() {
     },
   });
 
+  const recoverPostMutation = useMutation({
+    mutationFn: (postId: string) => apiRequest("POST", `/api/posts/${postId}/recover`),
+    onSuccess: () => {
+      toast({ title: "Post recovered" });
+      setConfirmDeletePostId(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/my-content"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/tags"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/deleted"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/tag-insights"] });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Recover failed",
+        description: err?.message || "Unable to recover post",
+        variant: "destructive",
+      });
+    },
+  });
+
   const getTagCount = (tag: string) =>
     allPosts.filter((p) => p.appTag?.split(",").map((t) => t.trim()).includes(tag)).length;
   const visibleTags = tags.filter((tag) => getTagCount(tag) > 0);
+  const filteredVisibleTags = visibleTags.filter((tag) =>
+    tagSearchInput.trim() ? tag.toLowerCase().includes(tagSearchInput.trim().toLowerCase()) : true,
+  );
   const totalPosts = allPosts.length;
   const deletedCount = deletedPosts.length;
 
@@ -263,6 +359,242 @@ export default function MyContent() {
         )[0]
       : null;
 
+  const contentItems = useMemo<ContentListItem[]>(() => {
+    if (selectedTag === null && !isDeletedView) {
+      const grouped = buildChainAwareItems(displayPosts);
+      const followUpIds = new Set<string>();
+      const followUpThreadsIds = new Set<string>();
+
+      for (const item of grouped) {
+        if (item.kind !== "chain") continue;
+        for (const followUp of item.followUps) {
+          followUpIds.add(followUp.id);
+          if (followUp.threadsPostId) {
+            followUpThreadsIds.add(followUp.threadsPostId);
+          }
+        }
+      }
+
+      // Safety net: never render chain follow-ups as standalone cards.
+      return grouped.filter((item) => {
+        if (item.kind !== "single") return true;
+        if (followUpIds.has(item.post.id)) return false;
+        if (item.post.threadsPostId && followUpThreadsIds.has(item.post.threadsPostId)) return false;
+        return true;
+      });
+    }
+    return displayPosts.map((post) => ({ kind: "single", post }));
+  }, [displayPosts, isDeletedView, selectedTag]);
+
+  const toggleChainRoot = (rootId: string) => {
+    setExpandedChainRoots((prev) => ({ ...prev, [rootId]: !prev[rootId] }));
+  };
+
+  const renderPostCard = (
+    post: PostWithInsights,
+    options?: {
+      key?: string;
+      isFollowUp?: boolean;
+      onToggleChain?: () => void;
+    },
+  ) => {
+    const isChainRoot = typeof options?.onToggleChain === "function";
+    const storedInsights = getInsights(post);
+    const liveInsights = selectedTag === null ? allPostsLiveInsights[post.id] : undefined;
+    const insights: PostInsightMetrics = {
+      views: liveInsights?.views ?? storedInsights.views,
+      likes: liveInsights?.likes ?? storedInsights.likes,
+      replies: liveInsights?.replies ?? storedInsights.replies,
+      reposts: liveInsights?.reposts ?? storedInsights.reposts,
+      quotes: liveInsights?.quotes ?? storedInsights.quotes,
+    };
+    const hasInsights = Object.values(insights).some((value) => value !== undefined && value !== null);
+    const deletedAtValue = (post as any).deletedAt ? new Date((post as any).deletedAt) : null;
+    const deletedTimeText =
+      deletedAtValue && !Number.isNaN(deletedAtValue.getTime())
+        ? formatDistanceToNow(deletedAtValue, { addSuffix: true })
+        : null;
+
+    return (
+      <div
+        key={options?.key ?? post.id}
+        onClick={options?.onToggleChain}
+        className={`${options?.isFollowUp ? "p-3.5" : "p-4"} rounded-lg border transition-colors ${
+          isDeletedView
+            ? "border-destructive/35 border-l-4 bg-[rgba(55,22,22,0.6)] opacity-80"
+            : options?.isFollowUp
+              ? "border-white/10 bg-[linear-gradient(165deg,rgba(16,19,26,0.96),rgba(11,13,19,0.96))] shadow-[0_4px_14px_rgba(0,0,0,0.22)]"
+              : "border-white/10 bg-[linear-gradient(165deg,rgba(18,21,29,0.98),rgba(10,12,18,0.98))] shadow-[0_10px_30px_rgba(0,0,0,0.32)] hover:border-primary/35"
+        } ${isChainRoot ? "cursor-pointer" : ""}`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <p
+              className={`text-[15px] ${
+                isDeletedView
+                  ? "text-muted-foreground line-through decoration-destructive/50"
+                  : "text-foreground line-clamp-2"
+              }`}
+            >
+              {post.content}
+            </p>
+
+            {hasInsights || post.appTag || post.topicTag ? (
+              <div className="mt-1.5 flex items-start justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                  {insights.views !== undefined && (
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[13px] font-semibold text-slate-100">
+                      <Eye className="w-4 h-4 text-sky-300" />
+                      {Number(insights.views).toLocaleString()}
+                    </span>
+                  )}
+                  {insights.likes !== undefined && (
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[13px] font-semibold text-slate-100">
+                      <Heart className="w-4 h-4 text-rose-300" />
+                      {Number(insights.likes).toLocaleString()}
+                    </span>
+                  )}
+                  {insights.replies !== undefined && (
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[13px] font-semibold text-slate-100">
+                      <MessageCircle className="w-4 h-4 text-amber-300" />
+                      {Number(insights.replies).toLocaleString()}
+                    </span>
+                  )}
+                  {insights.reposts !== undefined && (
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[13px] font-semibold text-slate-100">
+                      <Repeat2 className="w-4 h-4 text-emerald-300" />
+                      {Number(insights.reposts).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+
+                {(post.appTag || post.topicTag) && (
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+                    {post.appTag
+                      ?.split(",")
+                      .map((tag) => tag.trim())
+                      .filter(Boolean)
+                      .map((tag) => (
+                        <span
+                          key={tag}
+                          className="inline-flex items-center rounded-md border border-black/10 bg-white px-2.5 py-1 text-[11px] font-['JetBrains_Mono'] font-extrabold tracking-[0.05em] text-black shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
+                        >
+                          #{tag.toUpperCase()}
+                        </span>
+                      ))}
+                    {post.topicTag && (
+                      <span className="inline-flex items-center gap-1 rounded-md border border-sky-500/30 bg-slate-950/80 px-2.5 py-1 text-xs font-semibold text-sky-500 shadow-[0_1px_4px_rgba(0,0,0,0.18)]">
+                        <Sparkles className="w-3 h-3" />
+                        {post.topicTag}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : selectedTag && !isDeletedView ? (
+              <div className="mt-2 text-xs text-muted-foreground">No insights</div>
+            ) : null}
+          </div>
+
+          <div className="relative flex flex-col justify-center items-start gap-2.5 flex-shrink-0 min-w-[196px] mr-1 pl-4 ml-1 before:absolute before:left-0 before:top-0 before:bottom-0 before:w-px before:bg-white/12">
+            {isDeletedView ? (
+              <>
+                <div className="rounded-md border border-destructive/35 bg-destructive/10 px-2 py-1">
+                  <StatusBadge status="deleted" />
+                </div>
+                {deletedTimeText ? (
+                  <div className="text-xs text-destructive/90">Deleted {deletedTimeText}</div>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs border-primary/35 text-primary hover:bg-primary/10"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    recoverPostMutation.mutate(post.id);
+                  }}
+                  disabled={recoverPostMutation.isPending}
+                >
+                  <RotateCcw className="w-3.5 h-3.5 mr-1" />
+                  {recoverPostMutation.isPending ? "Recovering..." : "Recover"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <div className="text-xs font-semibold tracking-wide text-slate-200/90 capitalize leading-none">
+                  {post.status}
+                </div>
+                <div className="inline-flex items-center justify-between gap-2 text-xs text-slate-300/85 w-full">
+                  <span className="inline-flex items-center gap-1.5 leading-none whitespace-nowrap">
+                    <Calendar className="w-3 h-3 text-primary/80" />
+                    {format(new Date(post.scheduledAt), "MMM d, h:mm a")}
+                  </span>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 rounded-md border border-destructive/35 bg-destructive/10 text-destructive hover:text-destructive hover:bg-destructive/20 self-center"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDeletePostId((prev) => (prev === post.id ? null : post.id));
+                    }}
+                    disabled={deletePostMutation.isPending}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+                {post.threadsPostId && (
+                  <a
+                    href={`https://threads.net/t/${post.threadsPostId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-primary/90 hover:text-primary leading-none"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    View on Threads
+                  </a>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {!isDeletedView && confirmDeletePostId === post.id && (
+          <div
+            className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/35 bg-destructive/10 px-3 py-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-xs text-destructive">Delete this post from Threads and ThreadFlow?</p>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deletePostMutation.mutate(post.id);
+                }}
+                disabled={deletePostMutation.isPending}
+              >
+                {deletePostMutation.isPending && confirmDeletePostId === post.id ? "Deleting..." : "Delete"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmDeletePostId(null);
+                }}
+                disabled={deletePostMutation.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="p-6 h-full overflow-y-auto">
       <div className="mb-6">
@@ -272,7 +604,7 @@ export default function MyContent() {
 
       <div className="flex gap-6">
         <div className="w-52 flex-shrink-0">
-          <Card>
+          <Card className="border-white/10 bg-[linear-gradient(160deg,rgba(20,23,30,0.96),rgba(12,14,20,0.96))] shadow-[0_10px_28px_rgba(0,0,0,0.35)]">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm">My Tags</CardTitle>
             </CardHeader>
@@ -302,41 +634,64 @@ export default function MyContent() {
                 <span className="h-px flex-1 bg-border/60" />
               </div>
 
-              {loadingTags ? (
-                <div className="space-y-2">
-                  <Skeleton className="h-8 w-full" />
-                  <Skeleton className="h-8 w-full" />
-                  <Skeleton className="h-8 w-full" />
+              <div className="space-y-2 pt-0.5">
+                <div>
+                  <Input
+                    value={tagSearchInput}
+                    onChange={(e) => setTagSearchInput(e.target.value)}
+                    placeholder="Search hashtags"
+                    className="h-8 text-xs placeholder:text-center"
+                  />
                 </div>
-              ) : visibleTags.length === 0 ? (
-                <p className="text-xs text-muted-foreground py-4 text-center">No tags yet</p>
-              ) : (
-                visibleTags.map((tag) => (
-                  <Button
-                    key={tag}
-                    variant={selectedTag === tag ? "default" : "ghost"}
-                    size="sm"
-                    className="w-full justify-start font-normal"
-                    onClick={() => {
-                      if (!isProPlan) {
-                        toast({
-                          title: "Tag filters are a Pro feature.",
-                          description: "Enable Pro from the sidebar to unlock tag filtering.",
-                        });
-                        return;
-                      }
-                      setSelectedTag(tag);
-                      setConfirmDeletePostId(null);
-                    }}
-                  >
-                    <Hash className="w-4 h-4 mr-2" />
-                    {tag}
-                    <Badge variant="secondary" className="ml-auto text-xs">
-                      {getTagCount(tag)}
-                    </Badge>
-                  </Button>
-                ))
-              )}
+
+                {loadingTags ? (
+                  <div className="space-y-2">
+                    <Skeleton className="h-8 w-full" />
+                    <Skeleton className="h-8 w-full" />
+                    <Skeleton className="h-8 w-full" />
+                  </div>
+                ) : filteredVisibleTags.length === 0 ? (
+                  <p className="text-xs text-muted-foreground py-4 text-center">
+                    {visibleTags.length === 0 ? "No tags yet" : "No matching hashtags"}
+                  </p>
+                ) : (
+                  <div className="relative">
+                    <div
+                      className="h-[360px] overflow-y-auto pr-1 space-y-1 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[rgba(255,255,255,0.1)] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb:hover]:bg-[rgba(255,255,255,0.2)]"
+                      style={{ scrollbarWidth: "thin", scrollbarColor: "transparent transparent" }}
+                    >
+                      {filteredVisibleTags.map((tag) => (
+                        <Button
+                          key={tag}
+                          variant={selectedTag === tag ? "default" : "ghost"}
+                          size="sm"
+                          className="w-full justify-start font-normal"
+                          onClick={() => {
+                            if (!isProPlan) {
+                              toast({
+                                title: "Tag filters are a Pro feature.",
+                                description: "Enable Pro from the sidebar to unlock tag filtering.",
+                              });
+                              return;
+                            }
+                            setSelectedTag(tag);
+                            setConfirmDeletePostId(null);
+                          }}
+                        >
+                          <Hash className="w-4 h-4 mr-2" />
+                          <span className="font-['JetBrains_Mono'] font-bold tracking-[0.04em]">
+                            {tag.toUpperCase()}
+                          </span>
+                          <Badge variant="secondary" className="ml-auto text-xs">
+                            {getTagCount(tag)}
+                          </Badge>
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-card to-transparent pointer-events-none" />
+                  </div>
+                )}
+              </div>
 
               <div className="my-2 border-t border-border/60" />
 
@@ -372,7 +727,7 @@ export default function MyContent() {
                 ))
               ) : tagInsights?.averages ? (
                 <>
-                  <Card className="p-4">
+                  <Card className="p-4 border-white/10 bg-[linear-gradient(160deg,rgba(22,25,32,0.96),rgba(14,16,22,0.96))] shadow-[0_10px_24px_rgba(0,0,0,0.3)]">
                     <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
                       <Eye className="w-3.5 h-3.5" /> Avg Views
                     </div>
@@ -380,7 +735,7 @@ export default function MyContent() {
                       {tagInsights.averages.views.toLocaleString()}
                     </p>
                   </Card>
-                  <Card className="p-4">
+                  <Card className="p-4 border-white/10 bg-[linear-gradient(160deg,rgba(22,25,32,0.96),rgba(14,16,22,0.96))] shadow-[0_10px_24px_rgba(0,0,0,0.3)]">
                     <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
                       <Heart className="w-3.5 h-3.5" /> Avg Likes
                     </div>
@@ -388,7 +743,7 @@ export default function MyContent() {
                       {tagInsights.averages.likes.toLocaleString()}
                     </p>
                   </Card>
-                  <Card className="p-4">
+                  <Card className="p-4 border-white/10 bg-[linear-gradient(160deg,rgba(22,25,32,0.96),rgba(14,16,22,0.96))] shadow-[0_10px_24px_rgba(0,0,0,0.3)]">
                     <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
                       <MessageCircle className="w-3.5 h-3.5" /> Avg Replies
                     </div>
@@ -396,7 +751,7 @@ export default function MyContent() {
                       {tagInsights.averages.replies.toLocaleString()}
                     </p>
                   </Card>
-                  <Card className="p-4">
+                  <Card className="p-4 border-white/10 bg-[linear-gradient(160deg,rgba(22,25,32,0.96),rgba(14,16,22,0.96))] shadow-[0_10px_24px_rgba(0,0,0,0.3)]">
                     <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
                       <TrendingUp className="w-3.5 h-3.5" /> Total Posts
                     </div>
@@ -405,7 +760,7 @@ export default function MyContent() {
                 </>
               ) : tagInsights && !tagInsights.averages ? (
                 <div className="col-span-4 text-xs text-muted-foreground bg-muted/30 rounded-lg p-3">
-                  No insights available yet for <strong>#{selectedTag}</strong> - insights appear after
+                  No insights available yet for <strong>#{selectedTag.toUpperCase()}</strong> - insights appear after
                   posts are published to Threads.
                 </div>
               ) : null}
@@ -413,13 +768,13 @@ export default function MyContent() {
           )}
 
           {selectedTag && !isDeletedView && tagInsights?.bestPost && (
-            <Card className="border-primary/30 bg-primary/5">
+            <Card className="border-primary/35 bg-[linear-gradient(160deg,rgba(14,35,38,0.65),rgba(12,18,24,0.9))] shadow-[0_10px_24px_rgba(0,0,0,0.28)]">
               <CardContent className="py-3 px-4">
                 <div className="flex items-start gap-2">
                   <TrendingUp className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-medium text-primary mb-0.5">
-                      Best performing #{selectedTag} post
+                      Best performing #{selectedTag.toUpperCase()} post
                     </p>
                     <p className="text-sm text-foreground line-clamp-1">{tagInsights.bestPost.content}</p>
                     <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
@@ -446,11 +801,11 @@ export default function MyContent() {
             </Card>
           )}
 
-          <Card>
+          <Card className="border-white/10 bg-[linear-gradient(160deg,rgba(20,23,30,0.96),rgba(12,14,20,0.96))] shadow-[0_10px_28px_rgba(0,0,0,0.35)]">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base">
-                  {isDeletedView ? "Deleted Posts" : selectedTag ? `#${selectedTag}` : "All Posts"}
+                  {isDeletedView ? "Deleted Posts" : selectedTag ? `#${selectedTag.toUpperCase()}` : "All Posts"}
                 </CardTitle>
                 {selectedTag && !isDeletedView && latestPost && (
                   <span className="text-xs text-muted-foreground">
@@ -458,6 +813,11 @@ export default function MyContent() {
                   </span>
                 )}
               </div>
+              {isDeletedView && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Deleted posts are permanently removed after 30 days.
+                </p>
+              )}
             </CardHeader>
             <CardContent>
               {loadingDisplayPosts ? (
@@ -478,176 +838,50 @@ export default function MyContent() {
                   </p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {displayPosts.map((post) => {
-                    const storedInsights = getInsights(post);
-                    const liveInsights =
-                      selectedTag === null ? allPostsLiveInsights[post.id] : undefined;
-                    const insights: PostInsightMetrics = {
-                      views: liveInsights?.views ?? storedInsights.views,
-                      likes: liveInsights?.likes ?? storedInsights.likes,
-                      replies: liveInsights?.replies ?? storedInsights.replies,
-                      reposts: liveInsights?.reposts ?? storedInsights.reposts,
-                      quotes: liveInsights?.quotes ?? storedInsights.quotes,
-                    };
-                    const hasInsights = Object.values(insights).some(
-                      (value) => value !== undefined && value !== null,
-                    );
-                    const deletedAtValue = (post as any).deletedAt
-                      ? new Date((post as any).deletedAt)
-                      : null;
-                    const deletedTimeText =
-                      deletedAtValue && !Number.isNaN(deletedAtValue.getTime())
-                        ? formatDistanceToNow(deletedAtValue, { addSuffix: true })
-                        : null;
+                <div className="relative">
+                  <div
+                    className="max-h-[560px] overflow-y-auto pr-1 space-y-3 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[rgba(255,255,255,0.1)] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb:hover]:bg-[rgba(255,255,255,0.2)]"
+                    style={{ scrollbarWidth: "thin", scrollbarColor: "transparent transparent" }}
+                  >
+                    {contentItems.map((item) => {
+                      if (item.kind === "single") {
+                        return renderPostCard(item.post);
+                      }
 
-                    return (
-                      <div
-                        key={post.id}
-                        className={`p-4 rounded-lg border bg-card transition-colors ${
-                          isDeletedView
-                            ? "border-destructive/35 border-l-4 bg-destructive/5 opacity-80"
-                            : "border-border hover:border-primary/30"
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex-1 min-w-0">
-                            <p
-                              className={`text-sm ${
-                                isDeletedView
-                                  ? "text-muted-foreground line-through decoration-destructive/50"
-                                  : "text-foreground line-clamp-2"
-                              }`}
-                            >
-                              {post.content}
-                            </p>
+                      const expanded = !!expandedChainRoots[item.root.id];
+                      return (
+                        <div key={`chain-${item.root.id}`} className="space-y-0.5">
+                          {renderPostCard(item.root, {
+                            key: item.root.id,
+                            onToggleChain: () => toggleChainRoot(item.root.id),
+                          })}
 
-                            <div className="flex flex-wrap items-center gap-2 mt-2">
-                              {post.appTag && (
-                                <div className="flex flex-wrap gap-1">
-                                  {post.appTag
-                                    .split(",")
-                                    .map((tag) => tag.trim())
-                                    .filter(Boolean)
-                                    .map((tag) => (
-                                      <span
-                                        key={tag}
-                                        className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
-                                      >
-                                        {tag}
-                                      </span>
-                                    ))}
-                                </div>
-                              )}
-                              {post.topicTag && <span className="text-xs text-primary">* {post.topicTag}</span>}
+                          {!expanded && item.followUps.length > 0 && (
+                            <div className="ml-2 -mt-1">
+                              <div className="h-1 w-[94%] rounded-full bg-[#0EA5E9]/22 shadow-[0_1px_4px_rgba(14,165,233,0.22)]" />
+                              <div className="mt-0.5 h-1 w-[88%] rounded-full bg-[#0EA5E9]/15 shadow-[0_1px_3px_rgba(14,165,233,0.20)]" />
                             </div>
+                          )}
 
-                            {hasInsights ? (
-                              <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
-                                {insights.views !== undefined && (
-                                  <span className="flex items-center gap-1">
-                                    <Eye className="w-3 h-3" />
-                                    {Number(insights.views).toLocaleString()}
-                                  </span>
-                                )}
-                                {insights.likes !== undefined && (
-                                  <span className="flex items-center gap-1">
-                                    <Heart className="w-3 h-3" />
-                                    {Number(insights.likes).toLocaleString()}
-                                  </span>
-                                )}
-                                {insights.replies !== undefined && (
-                                  <span className="flex items-center gap-1">
-                                    <MessageCircle className="w-3 h-3" />
-                                    {Number(insights.replies).toLocaleString()}
-                                  </span>
-                                )}
-                                {insights.reposts !== undefined && (
-                                  <span className="flex items-center gap-1">
-                                    <Repeat2 className="w-3 h-3" />
-                                    {Number(insights.reposts).toLocaleString()}
-                                  </span>
-                                )}
-                              </div>
-                            ) : selectedTag && !isDeletedView ? (
-                              <div className="mt-2 text-xs text-muted-foreground">No insights</div>
-                            ) : null}
-                          </div>
-
-                          <div className="flex flex-col items-start gap-1.5 flex-shrink-0 min-w-[136px] mr-1">
-                            {isDeletedView ? (
-                              <>
-                                <StatusBadge status="deleted" />
-                                {deletedTimeText ? (
-                                  <div className="text-xs text-destructive">Deleted {deletedTimeText}</div>
-                                ) : null}
-                              </>
-                            ) : (
-                              <>
-                                <StatusBadge status={post.status} />
-                                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                                  <Calendar className="w-3 h-3" />
-                                  {format(new Date(post.scheduledAt), "MMM d, h:mm a")}
+                          {expanded && (
+                            <div className="relative ml-3 pl-2.5 space-y-1.5">
+                              <div className="absolute left-0 top-1.5 bottom-1.5 w-px bg-[#0EA5E9]/75" />
+                              {item.followUps.map((followUpPost) => (
+                                <div key={followUpPost.id} className="relative">
+                                  <div className="absolute -left-2.5 top-5 h-px w-2 bg-[#0EA5E9]/65" />
+                                  {renderPostCard(followUpPost, {
+                                    key: followUpPost.id,
+                                    isFollowUp: true,
+                                  })}
                                 </div>
-                                {post.threadsPostId && (
-                                  <div className="flex items-center gap-2">
-                                    <a
-                                      href={`https://threads.net/t/${post.threadsPostId}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1"
-                                    >
-                                      <ExternalLink className="w-3 h-3" />
-                                      View on Threads
-                                    </a>
-                                    <Button
-                                      size="icon"
-                                      variant="ghost"
-                                      className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
-                                      onClick={() =>
-                                        setConfirmDeletePostId((prev) => (prev === post.id ? null : post.id))
-                                      }
-                                      disabled={deletePostMutation.isPending}
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </Button>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-
-                        {!isDeletedView && confirmDeletePostId === post.id && (
-                          <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/35 bg-destructive/10 px-3 py-2">
-                            <p className="text-xs text-destructive">
-                              Delete this post from Threads and ThreadFlow?
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                onClick={() => deletePostMutation.mutate(post.id)}
-                                disabled={deletePostMutation.isPending}
-                              >
-                                {deletePostMutation.isPending && confirmDeletePostId === post.id
-                                  ? "Deleting..."
-                                  : "Delete"}
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => setConfirmDeletePostId(null)}
-                                disabled={deletePostMutation.isPending}
-                              >
-                                Cancel
-                              </Button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
+                  <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-card to-transparent pointer-events-none" />
                 </div>
               )}
             </CardContent>
