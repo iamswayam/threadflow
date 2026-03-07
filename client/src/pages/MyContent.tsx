@@ -6,6 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Hash,
   Calendar,
   ExternalLink,
@@ -16,7 +23,6 @@ import {
   Repeat2,
   TrendingUp,
   Trash2,
-  Crown,
   Sparkles,
   RotateCcw,
 } from "lucide-react";
@@ -173,6 +179,7 @@ export default function MyContent() {
   const [devProMode, setDevProMode] = useState(false);
   const [tagSearchInput, setTagSearchInput] = useState("");
   const [expandedChainRoots, setExpandedChainRoots] = useState<Record<string, boolean>>({});
+  const [sortBy, setSortBy] = useState<"date" | "views" | "likes" | "replies">("date");
 
   const isDeletedView = selectedTag === DELETED_TAG;
   const isProPlan = devProMode;
@@ -386,6 +393,36 @@ export default function MyContent() {
     return displayPosts.map((post) => ({ kind: "single", post }));
   }, [displayPosts, isDeletedView, selectedTag]);
 
+  const getSortableMetric = (
+    post: PostWithInsights,
+    metric: "views" | "likes" | "replies",
+  ): number | undefined => {
+    const stored = getInsights(post);
+    const live = selectedTag === null ? allPostsLiveInsights[post.id] : undefined;
+    if (metric === "views") return live?.views ?? stored.views;
+    if (metric === "likes") return live?.likes ?? stored.likes;
+    return live?.replies ?? stored.replies;
+  };
+
+  const sortedContentItems = useMemo<ContentListItem[]>(() => {
+    const sorted = [...contentItems];
+    const itemPost = (item: ContentListItem) => (item.kind === "single" ? item.post : item.root);
+
+    if (sortBy === "date") {
+      return sorted.sort((a, b) => getPostSortTime(itemPost(b)) - getPostSortTime(itemPost(a)));
+    }
+
+    const metricKey = sortBy;
+    return sorted.sort((a, b) => {
+      const aVal = getSortableMetric(itemPost(a), metricKey);
+      const bVal = getSortableMetric(itemPost(b), metricKey);
+      if (aVal === undefined && bVal === undefined) return 0;
+      if (aVal === undefined) return 1;
+      if (bVal === undefined) return -1;
+      return bVal - aVal;
+    });
+  }, [contentItems, sortBy, selectedTag, allPostsLiveInsights]);
+
   const toggleChainRoot = (rootId: string) => {
     setExpandedChainRoots((prev) => ({ ...prev, [rootId]: !prev[rootId] }));
   };
@@ -408,7 +445,11 @@ export default function MyContent() {
       reposts: liveInsights?.reposts ?? storedInsights.reposts,
       quotes: liveInsights?.quotes ?? storedInsights.quotes,
     };
-    const hasInsights = Object.values(insights).some((value) => value !== undefined && value !== null);
+    const hasMetrics =
+      (insights.views ?? 0) > 0 ||
+      (insights.likes ?? 0) > 0 ||
+      (insights.replies ?? 0) > 0 ||
+      (insights.reposts ?? 0) > 0;
     const deletedAtValue = (post as any).deletedAt ? new Date((post as any).deletedAt) : null;
     const deletedTimeText =
       deletedAtValue && !Number.isNaN(deletedAtValue.getTime())
@@ -419,143 +460,133 @@ export default function MyContent() {
       <div
         key={options?.key ?? post.id}
         onClick={options?.onToggleChain}
-        className={`${options?.isFollowUp ? "p-3.5" : "p-4"} rounded-lg border transition-colors ${
+        className={`${options?.isFollowUp ? "p-3.5" : "p-4"} rounded-lg border transition-all duration-150 ${
           isDeletedView
             ? "border-destructive/35 border-l-4 bg-[rgba(55,22,22,0.6)] opacity-80"
             : options?.isFollowUp
               ? "border-white/10 bg-[linear-gradient(165deg,rgba(16,19,26,0.96),rgba(11,13,19,0.96))] shadow-[0_4px_14px_rgba(0,0,0,0.22)]"
-              : "border-white/10 bg-[linear-gradient(165deg,rgba(18,21,29,0.98),rgba(10,12,18,0.98))] shadow-[0_10px_30px_rgba(0,0,0,0.32)] hover:border-primary/35"
+              : "border-white/10 bg-[linear-gradient(165deg,rgba(18,21,29,0.98),rgba(10,12,18,0.98))] shadow-[0_10px_30px_rgba(0,0,0,0.32)] hover:border-primary/50 hover:bg-primary/[0.02]"
         } ${isChainRoot ? "cursor-pointer" : ""}`}
       >
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <p
-              className={`text-[15px] ${
-                isDeletedView
-                  ? "text-muted-foreground line-through decoration-destructive/50"
-                  : "text-foreground line-clamp-2"
-              }`}
-            >
-              {post.content}
-            </p>
+        <div className="space-y-2.5 min-w-0">
+          <p className="text-sm text-foreground line-clamp-2 leading-relaxed overflow-hidden">{post.content}</p>
 
-            {hasInsights || post.appTag || post.topicTag ? (
-              <div className="mt-1.5 flex items-start justify-between gap-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0 space-y-2">
+              {hasMetrics ? (
                 <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                  {insights.views !== undefined && (
+                  {(insights.views ?? 0) > 0 && (
                     <span className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[13px] font-semibold text-slate-100">
                       <Eye className="w-4 h-4 text-sky-300" />
                       {Number(insights.views).toLocaleString()}
                     </span>
                   )}
-                  {insights.likes !== undefined && (
+                  {(insights.likes ?? 0) > 0 && (
                     <span className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[13px] font-semibold text-slate-100">
                       <Heart className="w-4 h-4 text-rose-300" />
                       {Number(insights.likes).toLocaleString()}
                     </span>
                   )}
-                  {insights.replies !== undefined && (
+                  {(insights.replies ?? 0) > 0 && (
                     <span className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[13px] font-semibold text-slate-100">
                       <MessageCircle className="w-4 h-4 text-amber-300" />
                       {Number(insights.replies).toLocaleString()}
                     </span>
                   )}
-                  {insights.reposts !== undefined && (
+                  {(insights.reposts ?? 0) > 0 && (
                     <span className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-[13px] font-semibold text-slate-100">
                       <Repeat2 className="w-4 h-4 text-emerald-300" />
                       {Number(insights.reposts).toLocaleString()}
                     </span>
                   )}
                 </div>
+              ) : selectedTag && !isDeletedView ? (
+                <div className="text-xs text-muted-foreground">No insights</div>
+              ) : null}
 
-                {(post.appTag || post.topicTag) && (
-                  <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
-                    {post.appTag
-                      ?.split(",")
-                      .map((tag) => tag.trim())
-                      .filter(Boolean)
-                      .map((tag) => (
-                        <span
-                          key={tag}
-                          className="inline-flex items-center rounded-md border border-black/10 bg-white px-2.5 py-1 text-[11px] font-['JetBrains_Mono'] font-extrabold tracking-[0.05em] text-black shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
-                        >
-                          #{tag.toUpperCase()}
-                        </span>
-                      ))}
-                    {post.topicTag && (
-                      <span className="inline-flex items-center gap-1 rounded-md border border-sky-500/30 bg-slate-950/80 px-2.5 py-1 text-xs font-semibold text-sky-500 shadow-[0_1px_4px_rgba(0,0,0,0.18)]">
-                        <Sparkles className="w-3 h-3" />
-                        {post.topicTag}
+              {(post.appTag || post.topicTag) && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {post.appTag
+                    ?.split(",")
+                    .map((tag) => tag.trim())
+                    .filter(Boolean)
+                    .map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center rounded-md border border-black/10 bg-white px-2.5 py-1 text-[11px] font-['JetBrains_Mono'] font-extrabold tracking-[0.05em] text-black shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
+                      >
+                        #{tag.toUpperCase()}
                       </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : selectedTag && !isDeletedView ? (
-              <div className="mt-2 text-xs text-muted-foreground">No insights</div>
-            ) : null}
-          </div>
+                    ))}
+                  {post.topicTag && (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-sky-500/30 bg-slate-950/80 px-2.5 py-1 text-xs font-semibold text-sky-500 shadow-[0_1px_4px_rgba(0,0,0,0.18)]">
+                      <Sparkles className="w-3 h-3" />
+                      {post.topicTag}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
 
-          <div className="relative flex flex-col justify-center items-start gap-2.5 flex-shrink-0 min-w-[196px] mr-1 pl-4 ml-1 before:absolute before:left-0 before:top-0 before:bottom-0 before:w-px before:bg-white/12">
-            {isDeletedView ? (
-              <>
-                <div className="rounded-md border border-destructive/35 bg-destructive/10 px-2 py-1">
-                  <StatusBadge status="deleted" />
-                </div>
-                {deletedTimeText ? (
-                  <div className="text-xs text-destructive/90">Deleted {deletedTimeText}</div>
-                ) : null}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-xs border-primary/35 text-primary hover:bg-primary/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    recoverPostMutation.mutate(post.id);
-                  }}
-                  disabled={recoverPostMutation.isPending}
-                >
-                  <RotateCcw className="w-3.5 h-3.5 mr-1" />
-                  {recoverPostMutation.isPending ? "Recovering..." : "Recover"}
-                </Button>
-              </>
-            ) : (
-              <>
-                <div className="text-xs font-semibold tracking-wide text-slate-200/90 capitalize leading-none">
-                  {post.status}
-                </div>
-                <div className="inline-flex items-center justify-between gap-2 text-xs text-slate-300/85 w-full">
-                  <span className="inline-flex items-center gap-1.5 leading-none whitespace-nowrap">
-                    <Calendar className="w-3 h-3 text-primary/80" />
-                    {format(new Date(post.scheduledAt), "MMM d, h:mm a")}
-                  </span>
+            <div className="relative flex flex-col items-end gap-1 flex-shrink-0 min-w-[196px] pl-4 before:absolute before:left-0 before:top-0 before:bottom-0 before:w-px before:bg-white/12">
+              {isDeletedView ? (
+                <>
+                  <div className="rounded-md border border-destructive/35 bg-destructive/10 px-2 py-1">
+                    <StatusBadge status="deleted" />
+                  </div>
+                  {deletedTimeText ? (
+                    <div className="text-xs text-destructive/90">Deleted {deletedTimeText}</div>
+                  ) : null}
                   <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7 rounded-md border border-destructive/35 bg-destructive/10 text-destructive hover:text-destructive hover:bg-destructive/20 self-center"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-xs border-primary/35 text-primary hover:bg-primary/10"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setConfirmDeletePostId((prev) => (prev === post.id ? null : post.id));
+                      recoverPostMutation.mutate(post.id);
                     }}
-                    disabled={deletePostMutation.isPending}
+                    disabled={recoverPostMutation.isPending}
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
+                    <RotateCcw className="w-3.5 h-3.5 mr-1" />
+                    {recoverPostMutation.isPending ? "Recovering..." : "Recover"}
                   </Button>
-                </div>
-                {post.threadsPostId && (
-                  <a
-                    href={`https://threads.net/t/${post.threadsPostId}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-primary/90 hover:text-primary leading-none"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    View on Threads
-                  </a>
-                )}
-              </>
-            )}
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2">
+                    <StatusBadge status={post.status} />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7 rounded-md border border-destructive/35 bg-destructive/10 text-destructive hover:text-destructive hover:bg-destructive/20"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeletePostId((prev) => (prev === post.id ? null : post.id));
+                      }}
+                      disabled={deletePostMutation.isPending}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 text-xs text-slate-300/85 leading-none whitespace-nowrap">
+                    <Calendar className="w-3 h-3 text-primary/80" />
+                    {format(new Date((post as any).createdAt ?? post.scheduledAt), "MMM d, h:mm a")}
+                  </div>
+                  {post.threadsPostId && (
+                    <a
+                      href={`https://threads.net/t/${post.threadsPostId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-primary/90 hover:text-primary leading-none"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      View on Threads
+                    </a>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
 
@@ -596,13 +627,17 @@ export default function MyContent() {
   };
 
   return (
-    <div className="p-6 h-full overflow-y-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">My Content</h1>
-        <p className="text-muted-foreground mt-1">Organize and track your posts by personal tags</p>
+    <div className="flex flex-col h-full overflow-hidden px-6 pt-3 pb-6">
+      <div className="flex items-baseline gap-3 mb-4">
+        <h1 className="text-2xl font-bold text-foreground">
+          My Content
+        </h1>
+        <span className="text-sm text-muted-foreground">
+          Organize and track your posts by personal tags
+        </span>
       </div>
 
-      <div className="flex gap-6">
+      <div className="flex gap-6 flex-1 min-h-0">
         <div className="w-52 flex-shrink-0">
           <Card className="border-white/10 bg-[linear-gradient(160deg,rgba(20,23,30,0.96),rgba(12,14,20,0.96))] shadow-[0_10px_28px_rgba(0,0,0,0.35)]">
             <CardHeader className="pb-3">
@@ -624,15 +659,6 @@ export default function MyContent() {
                   {totalPosts}
                 </Badge>
               </Button>
-
-              <div className="flex items-center gap-2 py-1.5">
-                <span className="h-px flex-1 bg-border/60" />
-                <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                  <Crown className="w-3 h-3 text-orange-400" />
-                  filters
-                </span>
-                <span className="h-px flex-1 bg-border/60" />
-              </div>
 
               <div className="space-y-2 pt-0.5">
                 <div>
@@ -718,7 +744,7 @@ export default function MyContent() {
           </Card>
         </div>
 
-        <div className="flex-1 space-y-4">
+        <div className="flex-1 min-h-0 flex flex-col gap-4">
           {selectedTag && !isDeletedView && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {loadingInsights ? (
@@ -801,17 +827,32 @@ export default function MyContent() {
             </Card>
           )}
 
-          <Card className="border-white/10 bg-[linear-gradient(160deg,rgba(20,23,30,0.96),rgba(12,14,20,0.96))] shadow-[0_10px_28px_rgba(0,0,0,0.35)]">
+          <Card className="border-white/10 bg-[linear-gradient(160deg,rgba(20,23,30,0.96),rgba(12,14,20,0.96))] shadow-[0_10px_28px_rgba(0,0,0,0.35)] flex flex-col flex-1 min-h-0">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base">
                   {isDeletedView ? "Deleted Posts" : selectedTag ? `#${selectedTag.toUpperCase()}` : "All Posts"}
                 </CardTitle>
-                {selectedTag && !isDeletedView && latestPost && (
-                  <span className="text-xs text-muted-foreground">
-                    Latest: {format(new Date(latestPost.createdAt), "MMM d, h:mm a")}
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {!isDeletedView && (
+                    <Select value={sortBy} onValueChange={(v) => setSortBy(v as "date" | "views" | "likes" | "replies")}>
+                      <SelectTrigger className="w-32 h-7 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="date">Latest</SelectItem>
+                        <SelectItem value="views">Most Views</SelectItem>
+                        <SelectItem value="likes">Most Likes</SelectItem>
+                        <SelectItem value="replies">Most Replies</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                  {selectedTag && !isDeletedView && latestPost && (
+                    <span className="text-xs text-muted-foreground">
+                      Latest: {format(new Date(latestPost.createdAt), "MMM d, h:mm a")}
+                    </span>
+                  )}
+                </div>
               </div>
               {isDeletedView && (
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -819,7 +860,7 @@ export default function MyContent() {
                 </p>
               )}
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex-1 min-h-0">
               {loadingDisplayPosts ? (
                 <div className="space-y-3">
                   <Skeleton className="h-20 w-full" />
@@ -838,12 +879,12 @@ export default function MyContent() {
                   </p>
                 </div>
               ) : (
-                <div className="relative">
+                <div className="relative h-full">
                   <div
-                    className="max-h-[560px] overflow-y-auto pr-1 space-y-3 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[rgba(255,255,255,0.1)] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb:hover]:bg-[rgba(255,255,255,0.2)]"
+                    className="h-full overflow-y-auto pr-1 space-y-3 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[rgba(255,255,255,0.1)] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb:hover]:bg-[rgba(255,255,255,0.2)]"
                     style={{ scrollbarWidth: "thin", scrollbarColor: "transparent transparent" }}
                   >
-                    {contentItems.map((item) => {
+                    {sortedContentItems.map((item) => {
                       if (item.kind === "single") {
                         return renderPostCard(item.post);
                       }
