@@ -25,6 +25,7 @@ import {
   Trash2,
   Sparkles,
   RotateCcw,
+  Pencil,
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -96,6 +97,37 @@ function toMetric(value: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function normalizeSingleTag(value: string): string {
+  return value.trim().replace(/^#+/, "");
+}
+
+function parseAppTagDraftList(raw: string): string[] {
+  const parts = raw
+    .split(",")
+    .map((part) => normalizeSingleTag(part))
+    .filter(Boolean);
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of parts) {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(tag);
+    if (unique.length >= 5) break;
+  }
+  return unique;
+}
+
+function formatAppTagDraft(tags: string[], trailingComma = false): string {
+  const normalized = tags
+    .map((tag) => normalizeSingleTag(tag))
+    .filter(Boolean)
+    .slice(0, 5);
+  const base = normalized.map((tag) => `#${tag}`).join(", ");
+  if (!base) return "";
+  return `${base}${trailingComma && normalized.length < 5 ? ", " : ""}`;
+}
+
 function getInsights(post: PostWithInsights): PostInsightMetrics {
   return {
     views: toMetric(post.insights?.views ?? (post as any).insightsViews),
@@ -106,10 +138,10 @@ function getInsights(post: PostWithInsights): PostInsightMetrics {
   };
 }
 
-const CHAIN_MAX_GAP_MS = 2 * 60 * 1000;
+const CHAIN_MAX_GAP_MS = 45 * 1000;
 
 function getPostSortTime(post: PostWithInsights): number {
-  const raw = (post as any).createdAt ?? post.scheduledAt;
+  const raw = post.scheduledAt ?? (post as any).createdAt;
   const ms = new Date(raw).getTime();
   return Number.isFinite(ms) ? ms : 0;
 }
@@ -149,14 +181,9 @@ function buildChainAwareItems(posts: PostWithInsights[]): ContentListItem[] {
     const followUps = [...run.slice(0, -1)].reverse();
     const rootHasTag = hasAppTag(root);
     const followUpsHaveNoTags = followUps.every((post) => !hasAppTag(post));
-    const allPostsInRunHaveNoTag = run.every((post) => !hasAppTag(post));
     const likelyChain =
       run.length >= 3 &&
-      (
-        (rootHasTag && followUpsHaveNoTags) ||
-        // Legacy chains created before root APP_TAG support.
-        allPostsInRunHaveNoTag
-      );
+      (rootHasTag && followUpsHaveNoTags);
 
     if (likelyChain) {
       items.push({ kind: "chain", root, followUps });
@@ -176,6 +203,8 @@ export default function MyContent() {
   const queryClient = useQueryClient();
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [confirmDeletePostId, setConfirmDeletePostId] = useState<string | null>(null);
+  const [editingAppTagPostId, setEditingAppTagPostId] = useState<string | null>(null);
+  const [appTagDraft, setAppTagDraft] = useState("");
   const [devProMode, setDevProMode] = useState(false);
   const [tagSearchInput, setTagSearchInput] = useState("");
   const [expandedChainRoots, setExpandedChainRoots] = useState<Record<string, boolean>>({});
@@ -341,6 +370,26 @@ export default function MyContent() {
     },
   });
 
+  const updateAppTagMutation = useMutation({
+    mutationFn: ({ postId, appTag }: { postId: string; appTag: string }) =>
+      apiRequest("PATCH", `/api/posts/${postId}/app-tag`, { appTag }),
+    onSuccess: () => {
+      toast({ title: "APP_TAG updated" });
+      setEditingAppTagPostId(null);
+      setAppTagDraft("");
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/my-content"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/tags"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/posts/tag-insights"] });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Update failed",
+        description: err?.message || "Unable to update APP_TAG",
+        variant: "destructive",
+      });
+    },
+  });
+
   const getTagCount = (tag: string) =>
     allPosts.filter((p) => p.appTag?.split(",").map((t) => t.trim()).includes(tag)).length;
   const visibleTags = tags.filter((tag) => getTagCount(tag) > 0);
@@ -361,10 +410,32 @@ export default function MyContent() {
 
   const latestPost =
     selectedTag && !isDeletedView && displayPosts.length > 0
-      ? [...displayPosts].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        )[0]
+      ? [...displayPosts].sort((a, b) => getPostSortTime(b) - getPostSortTime(a))[0]
       : null;
+
+  const appTagDraftSuggestions = useMemo(() => {
+    const parts = appTagDraft.split(",");
+    const currentRaw = parts[parts.length - 1] ?? "";
+    const current = normalizeSingleTag(currentRaw).toLowerCase();
+    if (!current) return [];
+
+    const selected = new Set(
+      parts
+        .slice(0, -1)
+        .map((part) => normalizeSingleTag(part).toLowerCase())
+        .filter(Boolean),
+    );
+    if (selected.size >= 5) return [];
+
+    return tags
+      .filter((tag) => {
+        const normalized = tag.trim().toLowerCase();
+        if (!normalized) return false;
+        if (selected.has(normalized)) return false;
+        return normalized.startsWith(current) || normalized.includes(current);
+      })
+      .slice(0, 5);
+  }, [appTagDraft, tags]);
 
   const contentItems = useMemo<ContentListItem[]>(() => {
     if (selectedTag === null && !isDeletedView) {
@@ -427,6 +498,39 @@ export default function MyContent() {
     setExpandedChainRoots((prev) => ({ ...prev, [rootId]: !prev[rootId] }));
   };
 
+  const applyAppTagSuggestion = (suggestedTag: string) => {
+    const parts = appTagDraft.split(",");
+    const head = parts
+      .slice(0, -1)
+      .map((part) => normalizeSingleTag(part))
+      .filter(Boolean);
+    const dedupedHead = parseAppTagDraftList(head.join(", "));
+    const alreadySelected = dedupedHead.some((tag) => tag.toLowerCase() === suggestedTag.toLowerCase());
+    const nextTags = alreadySelected ? dedupedHead : [...dedupedHead, suggestedTag].slice(0, 5);
+    const trailing = nextTags.length < 5;
+    setAppTagDraft(formatAppTagDraft(nextTags, trailing));
+  };
+
+  const commitCurrentDraftToken = () => {
+    const parts = appTagDraft.split(",");
+    const head = parseAppTagDraftList(parts.slice(0, -1).join(","));
+    const currentRaw = parts[parts.length - 1] ?? "";
+    const current = normalizeSingleTag(currentRaw);
+    if (!current) return;
+
+    const alreadySelected = head.some((tag) => tag.toLowerCase() === current.toLowerCase());
+    const nextTags = alreadySelected ? head : [...head, current].slice(0, 5);
+    if (!alreadySelected && head.length >= 5) {
+      toast({
+        title: "APP_TAG limit reached",
+        description: "You can add up to 5 APP_TAGs.",
+      });
+    }
+
+    const trailing = nextTags.length < 5;
+    setAppTagDraft(formatAppTagDraft(nextTags, trailing));
+  };
+
   const renderPostCard = (
     post: PostWithInsights,
     options?: {
@@ -455,6 +559,12 @@ export default function MyContent() {
       deletedAtValue && !Number.isNaN(deletedAtValue.getTime())
         ? formatDistanceToNow(deletedAtValue, { addSuffix: true })
         : null;
+    const postTimeRaw = post.scheduledAt ?? (post as any).createdAt;
+    const postTimeValue = postTimeRaw ? new Date(postTimeRaw) : null;
+    const postTimeText =
+      postTimeValue && !Number.isNaN(postTimeValue.getTime())
+        ? format(postTimeValue, "MMM d, h:mm a")
+        : "Unknown time";
 
     return (
       <div
@@ -504,7 +614,7 @@ export default function MyContent() {
                 <div className="text-xs text-muted-foreground">No insights</div>
               ) : null}
 
-              {(post.appTag || post.topicTag) && (
+              {(post.appTag || post.topicTag || !isDeletedView) && (
                 <div className="flex flex-wrap items-center gap-1.5">
                   {post.appTag
                     ?.split(",")
@@ -524,6 +634,84 @@ export default function MyContent() {
                       {post.topicTag}
                     </span>
                   )}
+                  {!isDeletedView && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingAppTagPostId(post.id);
+                        setAppTagDraft(formatAppTagDraft(parseAppTagDraftList(post.appTag || "")));
+                      }}
+                    >
+                      <Pencil className="w-3 h-3 mr-1" />
+                      Edit APP_TAG
+                    </Button>
+                  )}
+                </div>
+              )}
+              {!isDeletedView && editingAppTagPostId === post.id && (
+                <div
+                  className="flex items-start gap-2"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="relative flex-1 min-w-0">
+                    <Input
+                      value={appTagDraft}
+                      onChange={(e) => setAppTagDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === ",") {
+                          e.preventDefault();
+                          commitCurrentDraftToken();
+                        }
+                      }}
+                      placeholder="Comma separated APP_TAGs"
+                      className="h-8 text-xs"
+                    />
+                    {appTagDraftSuggestions.length > 0 && (
+                      <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-md border border-border bg-popover shadow-lg">
+                        {appTagDraftSuggestions.map((tag) => (
+                          <button
+                            key={tag}
+                            type="button"
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
+                            onClick={() => applyAppTagSuggestion(tag)}
+                          >
+                            <Hash className="w-3 h-3 text-primary" />
+                            <span className="font-medium text-foreground">{tag}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => {
+                      const normalized = parseAppTagDraftList(appTagDraft);
+                      updateAppTagMutation.mutate({
+                        postId: post.id,
+                        appTag: normalized.join(", "),
+                      });
+                    }}
+                    disabled={updateAppTagMutation.isPending}
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => {
+                      setEditingAppTagPostId(null);
+                      setAppTagDraft("");
+                    }}
+                    disabled={updateAppTagMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
                 </div>
               )}
             </div>
@@ -570,7 +758,7 @@ export default function MyContent() {
                   </div>
                   <div className="inline-flex items-center gap-1.5 text-xs text-slate-300/85 leading-none whitespace-nowrap">
                     <Calendar className="w-3 h-3 text-primary/80" />
-                    {format(new Date((post as any).createdAt ?? post.scheduledAt), "MMM d, h:mm a")}
+                    {postTimeText}
                   </div>
                   {post.threadsPostId && (
                     <a

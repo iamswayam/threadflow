@@ -209,6 +209,77 @@ function scheduleInsightsRefresh(accessToken: string, scheduledPostId: string, t
   }, 10 * 60 * 1000);
 }
 
+async function syncRecentThreadsPostsToStorage(userId: string, user: any): Promise<void> {
+  if (!user?.threadsAccessToken) return;
+
+  try {
+    const profile = await threads.getProfile(user.threadsAccessToken);
+    const recentPosts = await threads.getUserPosts(user.threadsAccessToken, profile.id, 30);
+    if (!Array.isArray(recentPosts) || recentPosts.length === 0) return;
+
+    const existingPosts = await storage.getPostsByAppTag(userId, null);
+    const existingThreadsIds = new Set(
+      existingPosts
+        .map((post) => (typeof post.threadsPostId === "string" ? post.threadsPostId : ""))
+        .filter(Boolean),
+    );
+
+    const recentIds = recentPosts
+      .map((post: any) => (typeof post?.id === "string" ? post.id : ""))
+      .filter(Boolean);
+    const existingMetadata = await storage.getPostMetadataByThreadsIds(userId, recentIds);
+    const metadataById = new Map(existingMetadata.map((item) => [item.threadsPostId, item]));
+
+    for (const post of recentPosts) {
+      const threadsPostId = typeof post?.id === "string" ? post.id : "";
+      if (!threadsPostId || existingThreadsIds.has(threadsPostId)) continue;
+
+      const text = typeof post?.text === "string" && post.text.trim() ? post.text.trim() : "(media post)";
+      const timestamp = typeof post?.timestamp === "string" ? new Date(post.timestamp) : new Date();
+      const publishedAt = Number.isNaN(timestamp.getTime()) ? new Date() : timestamp;
+      const mediaTypeRaw = typeof post?.media_type === "string" ? post.media_type.toUpperCase() : "TEXT";
+      const mediaType = mediaTypeRaw === "IMAGE" || mediaTypeRaw === "VIDEO" ? mediaTypeRaw : "TEXT";
+      const apiTopicTag =
+        typeof post?.topic_tag === "string"
+          ? post.topic_tag.trim()
+          : typeof post?.topicTag === "string"
+            ? post.topicTag.trim()
+            : "";
+      const metadata = metadataById.get(threadsPostId);
+      const appTag = normalizeAppTag(metadata?.appTag || null) || null;
+      const topicTag = apiTopicTag || metadata?.topicTag || null;
+      const dnaSignals = extractDnaSignals(
+        text,
+        publishedAt,
+        mediaType === "TEXT" ? null : "external-media",
+      );
+
+      await storage.createScheduledPost(userId, {
+        content: text,
+        scheduledAt: publishedAt,
+        status: "published",
+        threadsPostId,
+        mediaType,
+        mediaUrl: null,
+        appTag,
+        topicTag,
+        ...dnaSignals,
+      } as any);
+
+      await storage.upsertPostMetadata(userId, {
+        threadsPostId,
+        appTag,
+        topicTag,
+        contentPreview: text.slice(0, 280),
+      });
+
+      existingThreadsIds.add(threadsPostId);
+    }
+  } catch {
+    // Sync is best-effort. Core request should still succeed.
+  }
+}
+
 function toTimestampMs(value: unknown): number | null {
   if (typeof value !== "string") return null;
   const ms = Date.parse(value);
@@ -1649,9 +1720,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(tags);
   });
 
+  app.patch("/api/posts/:postId/app-tag", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const postId = Array.isArray(req.params.postId) ? req.params.postId[0] : req.params.postId;
+
+    const activePosts = await storage.getPostsByAppTag(userId, null);
+    const targetPost = activePosts.find((post) => post.id === postId);
+    if (!targetPost) {
+      return res.status(404).json({ error: "Post not found" });
+    }
+
+    try {
+      const normalizedAppTag = normalizeAppTag(req.body?.appTag) || null;
+      const updatedPost = await storage.updateScheduledPost(postId, { appTag: normalizedAppTag });
+
+      if (targetPost.threadsPostId) {
+        await storage.upsertPostMetadata(userId, {
+          threadsPostId: targetPost.threadsPostId,
+          appTag: normalizedAppTag,
+          topicTag: updatedPost.topicTag || null,
+          contentPreview: typeof updatedPost.content === "string" ? updatedPost.content.slice(0, 280) : null,
+        });
+      }
+
+      res.json(updatedPost);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Unable to update APP_TAG" });
+    }
+  });
+
   // Get posts filtered by tag (optional ?tag= query param)
   app.get("/api/posts/my-content", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    await syncRecentThreadsPostsToStorage(userId, user);
     const tag = req.query.tag as string | undefined;
     const posts = await storage.getPostsByAppTag(userId, tag || null);
     res.json(posts);

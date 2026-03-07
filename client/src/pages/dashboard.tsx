@@ -1569,23 +1569,6 @@ function RecentPosts({
                       </span>
                     </div>
 
-                    {post.appTag && (
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {post.appTag
-                          .split(",")
-                          .map((tag: string) => tag.trim())
-                          .filter((tag: string) => Boolean(tag))
-                          .map((tag: string) => (
-                            <span
-                              key={tag}
-                              className="inline-flex items-center rounded-md border border-black/10 bg-white px-2.5 py-1 text-[11px] font-['JetBrains_Mono'] font-extrabold tracking-[0.05em] text-black shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
-                            >
-                              #{tag.toUpperCase()}
-                            </span>
-                          ))}
-                      </div>
-                    )}
-
                   </div>
                 </div>
                 </div>
@@ -2061,7 +2044,6 @@ export default function Dashboard() {
     </div>
   );
 }
-
 
 
 

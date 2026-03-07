@@ -401,7 +401,7 @@ export class DatabaseStorage implements IStorage {
           isNotNull(scheduledPosts.threadsPostId),
         ),
       )
-      .orderBy(desc(scheduledPosts.createdAt));
+      .orderBy(desc(scheduledPosts.scheduledAt));
 
     if (appTag) {
       const requestedTag = appTag.trim();

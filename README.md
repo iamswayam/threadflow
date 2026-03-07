@@ -194,6 +194,29 @@ This section is the fastest way for the next agent to understand the current pro
   - Deleting a chain root from My Content now cascades local soft-delete for owned replies under the same root.
   - API response from `DELETE /api/posts/:postId` includes `cascadeDeletedCount`.
 
+### 8) Latest updates (March 8, 2026)
+
+- My Content data accuracy (`server/routes.ts`, `server/storage.ts`, `client/src/pages/MyContent.tsx`)
+  - `GET /api/posts/my-content` now performs best-effort sync of recent Threads posts (including posts created outside ThreadFlow, e.g. mobile app posts) into local storage before returning data.
+  - Sync batch size is intentionally capped (recent 30 posts) to avoid sudden feed flooding.
+  - My Content ordering now uses real post time (`scheduledAt`) instead of DB insertion time (`createdAt`) for latest-to-older consistency.
+  - Storage query for My Content published posts now orders by `scheduledAt DESC`.
+  - Chain grouping detection was tightened to reduce false grouping of unrelated single posts:
+    - smaller grouping time window
+    - removed broad legacy no-tag chain fallback
+
+- My Content APP_TAG editing (`client/src/pages/MyContent.tsx`, `server/routes.ts`)
+  - Added `PATCH /api/posts/:postId/app-tag` to update APP_TAG only for a specific My Content post.
+  - Edit APP_TAG UI now supports:
+    - inline edit from each post card
+    - autocomplete suggestions from existing user tags
+    - Enter/comma tokenization to add multiple tags up to 5
+    - dedupe + normalization on save
+    - hashtag-style visual draft (`#TAG1, #TAG2, ...`)
+
+- Dashboard Recent Posts parity (`client/src/pages/dashboard.tsx`)
+  - Removed APP_TAG rendering from Recent Posts so the section stays Threads-native in appearance.
+
 ---
 
 ## Core Features
@@ -322,11 +345,13 @@ All endpoints below require `Authorization: Bearer <jwt>` unless noted.
 - `GET /api/posts/tag-insights`
 - `POST /api/posts/refresh-insights`
 - `GET /api/posts/dna-data`
+- `PATCH /api/posts/:postId/app-tag`
 - `DELETE /api/posts/:postId`
 - `GET /api/posts/deleted`
 
 Behavior notes:
-- `GET /api/posts/my-content` returns only published + non-deleted posts with `threadsPostId`.
+- `GET /api/posts/my-content` returns only published + non-deleted posts with `threadsPostId`, ordered latest-to-older by `scheduledAt`, and performs best-effort sync of recent external/mobile Threads posts.
+- `PATCH /api/posts/:postId/app-tag` updates APP_TAG only for the selected post (and keeps metadata in sync for dashboard/recent views).
 - `DELETE /api/posts/:postId` may return `{ cascadeDeletedCount }` when deleting a chain root.
 
 ### Analytics and community
