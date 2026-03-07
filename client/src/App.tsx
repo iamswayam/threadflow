@@ -10,7 +10,7 @@ import { ThemeProvider, useTheme } from "@/components/theme-provider";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Sun, Moon } from "lucide-react";
+import { Sun, Moon, Bell, CheckCircle2, AlertCircle, Trophy, Sparkles } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
@@ -26,8 +26,16 @@ import ConnectThreads from "@/pages/connect-threads";
 import ThreadChain from "@/pages/ThreadChain"; // ✅ NEW
 import Analytics from "@/pages/Analytics"; // ✅ NEW
 import MyContent from "@/pages/MyContent"; // NEW
-import { Bell } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  THREADFLOW_NOTIFICATION_EVENT,
+  clearAll,
+  getNotifications,
+  getUnreadCount,
+  markAllRead,
+  markRead,
+  type NotificationItem,
+} from "@/lib/notifications";
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -45,23 +53,125 @@ function ThemeToggle() {
   );
 }
 
+function formatNotificationAge(timestamp: number): string {
+  const diffMs = Date.now() - timestamp;
+  if (!Number.isFinite(diffMs) || diffMs < 60_000) return "just now";
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function NotificationTypeIcon({ type }: { type: NotificationItem["type"] }) {
+  switch (type) {
+    case "success":
+      return <CheckCircle2 className="w-4 h-4 text-emerald-400" />;
+    case "error":
+      return <AlertCircle className="w-4 h-4 text-destructive" />;
+    case "milestone":
+      return <Trophy className="w-4 h-4 text-amber-400" />;
+    case "dna":
+      return <Sparkles className="w-4 h-4 text-primary" />;
+    case "info":
+    default:
+      return <Bell className="w-4 h-4 text-primary" />;
+  }
+}
+
 function NotificationBell() {
+  const [notifications, setNotifications] = useState<NotificationItem[]>(() => getNotifications());
+  const [unreadCount, setUnreadCount] = useState<number>(() => getUnreadCount());
+
+  const refreshNotifications = () => {
+    setNotifications(getNotifications());
+    setUnreadCount(getUnreadCount());
+  };
+
+  useEffect(() => {
+    refreshNotifications();
+    const handleNotificationUpdate = () => refreshNotifications();
+    window.addEventListener(THREADFLOW_NOTIFICATION_EVENT, handleNotificationUpdate as EventListener);
+    return () => {
+      window.removeEventListener(THREADFLOW_NOTIFICATION_EVENT, handleNotificationUpdate as EventListener);
+    };
+  }, []);
+
   return (
     <Popover>
       <PopoverTrigger asChild>
         <Button size="icon" variant="ghost" data-testid="button-notifications" className="text-muted-foreground relative">
           <Bell className="w-4 h-4" />
+          {unreadCount > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-destructive" />
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-0">
-        <div className="px-4 py-3 border-b border-border">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <p className="text-sm font-semibold text-foreground">Notifications</p>
+          {unreadCount > 0 && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              onClick={() => {
+                markAllRead();
+                refreshNotifications();
+              }}
+            >
+              Mark all read
+            </Button>
+          )}
         </div>
-        <div className="py-6 flex flex-col items-center justify-center text-center">
-          <Bell className="w-6 h-6 text-muted-foreground mb-2" />
-          <p className="text-sm text-muted-foreground">No notifications yet</p>
-          <p className="text-xs text-muted-foreground mt-1">Activity from your posts will appear here</p>
-        </div>
+        {notifications.length === 0 ? (
+          <div className="py-6 flex flex-col items-center justify-center text-center">
+            <Bell className="w-6 h-6 text-muted-foreground mb-2" />
+            <p className="text-sm text-muted-foreground">No notifications yet</p>
+            <p className="text-xs text-muted-foreground mt-1">Activity from your posts will appear here</p>
+          </div>
+        ) : (
+          <>
+            <div className="max-h-80 overflow-y-auto">
+              {notifications.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`w-full text-left py-3 px-4 border-b border-border/40 last:border-0 ${
+                    item.read ? "bg-background" : "border-l-2 border-primary bg-primary/5 pl-[14px]"
+                  }`}
+                  onClick={() => {
+                    markRead(item.id);
+                    refreshNotifications();
+                  }}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <NotificationTypeIcon type={item.type} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-foreground truncate">{item.title}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{item.message}</p>
+                      <p className="text-xs text-muted-foreground/70 mt-1">{formatNotificationAge(item.timestamp)}</p>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="border-t border-border px-4 py-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full text-xs"
+                onClick={() => {
+                  clearAll();
+                  refreshNotifications();
+                }}
+              >
+                Clear all
+              </Button>
+            </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );

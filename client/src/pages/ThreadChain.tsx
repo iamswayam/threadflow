@@ -289,9 +289,9 @@ export default function ThreadChain() {
                           {rootAppTags.map((tag) => (
                             <span
                               key={tag}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
+                              className="inline-flex items-center gap-1 rounded-md border border-black/10 bg-white px-2.5 py-1 text-[11px] font-['JetBrains_Mono'] font-extrabold tracking-[0.05em] text-black shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
                             >
-                              {tag}
+                              #{tag.toUpperCase()}
                               <button
                                 type="button"
                                 onClick={() => setRootAppTags((prev) => prev.filter((item) => item !== tag))}

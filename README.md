@@ -143,6 +143,34 @@ This section is the fastest way for the next agent to understand the current pro
 
 - Dashboard (`client/src/pages/dashboard.tsx`)
   - Reduced vertical padding of the 4 stats cards row (Scheduled Posts, Active Queues, Follow-Ups, Published) to reduce card height without changing typography/icon sizing.
+  - Added client-side notification triggers for:
+    - Scheduled post status transitions (`pending -> published`, `pending -> failed`)
+    - Performance DNA unlock at 15 tracked posts
+    - Follower growth detection
+    - Follower milestone achievements
+  - Notification milestone logic now matches ticker achievement logic exactly:
+    - Uses the same `FOLLOWER_CONGRATS_MILESTONES` and `MAJOR_FOLLOWER_MILESTONES`
+    - Uses the same active achievement window (`milestone <= followers < milestone + 100`)
+    - Major achievements get a distinct notification title/message
+  - Notification dedupe keys in localStorage:
+    - `threadflow_last_follower_count`
+    - `threadflow_last_milestone`
+    - `threadflow_dna_unlocked`
+
+- App shell notifications (`client/src/App.tsx`, `client/src/lib/notifications.ts`, `client/src/components/post-composer-card.tsx`)
+  - Replaced static bell popover with a live local notification center.
+  - Notification storage is client-side only (`localStorage`) and persists across refreshes.
+  - Added `threadflow:notification` window event for realtime refresh across components.
+  - Added notification helpers:
+    - `getNotifications`, `addNotification`, `markRead`, `markAllRead`, `clearAll`, `getUnreadCount`
+  - Added composer notifications on success:
+    - Publish now -> "Post published"
+    - Schedule -> "Post scheduled"
+  - Bell UI now includes:
+    - Unread dot badge
+    - Type-specific icons (`success`, `error`, `info`, `milestone`, `dna`)
+    - Relative timestamps
+    - Mark all read / clear all actions
 
 - Thread Chain (`client/src/pages/ThreadChain.tsx`)
   - Added root-only APP TAG support in chain composer.

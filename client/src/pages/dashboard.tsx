@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,8 +15,10 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
+import { addNotification } from "@/lib/notifications";
 import { useToast } from "@/hooks/use-toast";
 import { PostComposerCard } from "@/components/post-composer-card";
+import { TICKER_MESSAGES, buildInterleavedPool, isConditionMet, shuffleArray } from "@/lib/ticker-messages";
 import type { ScheduledPost, BulkQueueWithItems, FollowUpThread } from "@shared/schema";
 import { formatDistanceToNow, format } from "date-fns";
 
@@ -62,14 +64,18 @@ type DnaPost = {
   repost_count?: number | null;
   hookStyle?: string | null;
   hourOfDay?: number | null;
+  dayOfWeek?: number | null;
   topicTag?: string | null;
   appTag?: string | null;
   postLength?: number | null;
+  hasCta?: boolean | null;
+  hasMedia?: boolean | null;
   insightsViews?: number | null;
   insightsLikes?: number | null;
   insightsReplies?: number | null;
   insightsReposts?: number | null;
   timestamp?: string | null;
+  scheduledAt?: string | null;
   createdAt?: string | null;
   like_count?: number | null;
   view_count?: number | null;
@@ -95,6 +101,7 @@ type AnalyticsSummaryResponse = {
 type PersonaBreakdownItem = {
   label?: string | null;
   value?: number | null;
+  sharePct?: number | null;
 };
 
 type PersonaTopPost = {
@@ -123,8 +130,9 @@ type PersonaDataResponse = {
 } | null;
 
 type MarqueeItem = {
-  label: string;
+  category: string;
   value: string;
+  tone?: "default" | "milestone" | "milestone-major";
 };
 
 function toNumberOrZero(value: unknown): number {
@@ -144,21 +152,16 @@ function getPostReplies(post: DnaPost): number {
   return toNumberOrZero(post.replies ?? post.insightsReplies ?? post.replies_count);
 }
 
+function getPostReposts(post: DnaPost): number {
+  return toNumberOrZero(post.repost_count ?? post.reposts ?? post.insightsReposts);
+}
+
 function normalizeAppTags(value: unknown): string[] {
   if (typeof value !== "string") return [];
   return value
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean);
-}
-
-function formatHourRange(hour: number): string {
-  const start = ((hour % 24) + 24) % 24;
-  const end = (start + 2) % 24;
-  const start12 = ((start + 11) % 12) + 1;
-  const end12 = ((end + 11) % 12) + 1;
-  const suffix = start >= 12 ? "PM" : "AM";
-  return `${start12}\u2013${end12}${suffix}`;
 }
 
 function formatNum(value: unknown): string {
@@ -172,336 +175,740 @@ function formatNum(value: unknown): string {
   return `${Math.round(n)}`;
 }
 
-function previewText(text: unknown, wordLimit: number): string | null {
-  if (typeof text !== "string") return null;
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return null;
-  const snippet = words.slice(0, wordLimit).join(" ");
-  return `"${snippet}..."`;
-}
+function getNextFollowerMilestone(followers: number): number {
+  if (followers < 100) return 100;
 
-function topBreakdownItems(items: PersonaBreakdownItem[] | null | undefined, limit: number): PersonaBreakdownItem[] {
-  if (!Array.isArray(items)) return [];
-  return [...items]
-    .filter((item) => typeof item?.label === "string" && item.label.trim() && toNumberOrZero(item.value) > 0)
-    .sort((a, b) => toNumberOrZero(b.value) - toNumberOrZero(a.value))
-    .slice(0, limit);
-}
-
-function personaPostMetric(post: PersonaTopPost, metric: "views" | "likes" | "replies"): number {
-  return toNumberOrZero(post?.[metric] ?? post?.metrics?.[metric]);
-}
-
-function shuffleItems<T>(items: T[]): T[] {
-  const shuffled = [...items];
-  for (let i = shuffled.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  if (followers < 1000) {
+    if (followers < 250) return 250;
+    if (followers < 500) return 500;
+    return 1000;
   }
-  return shuffled;
+
+  if (followers < 10000) {
+    if (followers < 5000) return Math.ceil((followers + 1) / 500) * 500;
+    return Math.ceil((followers + 1) / 1000) * 1000;
+  }
+
+  if (followers < 100000) {
+    return Math.ceil((followers + 1) / 5000) * 5000;
+  }
+
+  if (followers < 1000000) {
+    return Math.ceil((followers + 1) / 50000) * 50000;
+  }
+
+  return Math.ceil((followers + 1) / 250000) * 250000;
 }
 
-function buildMarqueeItems(
+const FOLLOWER_CONGRATS_MILESTONES: number[] = (() => {
+  const values = new Set<number>([1000]);
+  for (let v = 5000; v <= 100000; v += 5000) values.add(v);
+  for (let v = 110000; v <= 200000; v += 10000) values.add(v);
+  for (let v = 250000; v <= 1000000; v += 50000) values.add(v);
+  return Array.from(values).sort((a, b) => a - b);
+})();
+
+const MAJOR_FOLLOWER_MILESTONES = new Set<number>([
+  1000,
+  10000,
+  25000,
+  50000,
+  100000,
+  200000,
+  300000,
+  1000000,
+]);
+
+const DNA_UNLOCK_STORAGE_KEY = "threadflow_dna_unlocked";
+const FOLLOWER_MILESTONE_STORAGE_KEY = "threadflow_last_milestone";
+const FOLLOWER_COUNT_STORAGE_KEY = "threadflow_last_follower_count";
+
+function getActiveFollowerCongratsMilestone(
+  followers: number,
+): { milestone: number; major: boolean } | null {
+  if (followers < 1000) return null;
+  for (let i = FOLLOWER_CONGRATS_MILESTONES.length - 1; i >= 0; i -= 1) {
+    const milestone = FOLLOWER_CONGRATS_MILESTONES[i];
+    if (followers >= milestone && followers < milestone + 100) {
+      return {
+        milestone,
+        major: MAJOR_FOLLOWER_MILESTONES.has(milestone),
+      };
+    }
+  }
+  return null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEK_MS = 7 * DAY_MS;
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function formatHourLabel(hour: number): string {
+  const normalized = ((hour % 24) + 24) % 24;
+  const hour12 = ((normalized + 11) % 12) + 1;
+  const suffix = normalized >= 12 ? "PM" : "AM";
+  return `${hour12} ${suffix}`;
+}
+
+function getPostTimestampMs(post: DnaPost): number | null {
+  const raw = post.scheduledAt || post.timestamp || post.createdAt;
+  if (!raw) return null;
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function formatTimeAgo(ms: number, nowMs: number): string {
+  const diff = Math.max(0, nowMs - ms);
+  if (diff < 60 * 60 * 1000) return `${Math.max(1, Math.floor(diff / (60 * 1000)))}m`;
+  if (diff < DAY_MS) return `${Math.max(1, Math.floor(diff / (60 * 60 * 1000)))}h`;
+  return `${Math.max(1, Math.floor(diff / DAY_MS))}d`;
+}
+
+function getDateKey(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+function minutesUntilHour(targetHour: number, now: Date): number {
+  const target = new Date(now);
+  target.setMinutes(0, 0, 0);
+  target.setHours(targetHour);
+  if (target.getTime() < now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+  return Math.max(0, Math.round((target.getTime() - now.getTime()) / (60 * 1000)));
+}
+
+function getTopBreakdownItem(items: PersonaBreakdownItem[] | null | undefined): PersonaBreakdownItem | null {
+  if (!Array.isArray(items)) return null;
+  const sorted = [...items]
+    .filter((item) => typeof item?.label === "string" && String(item.label).trim() && toNumberOrZero(item.value) > 0)
+    .sort((a, b) => toNumberOrZero(b.value) - toNumberOrZero(a.value));
+  return sorted[0] ?? null;
+}
+
+function toTitleCase(value: string): string {
+  return value
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getCountryTimezone(label: string): string {
+  const key = label.trim().toLowerCase();
+  const map: Record<string, string> = {
+    india: "Asia/Kolkata",
+    "united states": "America/New_York",
+    usa: "America/New_York",
+    us: "America/New_York",
+    "united kingdom": "Europe/London",
+    uk: "Europe/London",
+    england: "Europe/London",
+    canada: "America/Toronto",
+    australia: "Australia/Sydney",
+    "united arab emirates": "Asia/Dubai",
+    uae: "Asia/Dubai",
+    singapore: "Asia/Singapore",
+    germany: "Europe/Berlin",
+    france: "Europe/Paris",
+    spain: "Europe/Madrid",
+    italy: "Europe/Rome",
+    brazil: "America/Sao_Paulo",
+    mexico: "America/Mexico_City",
+    japan: "Asia/Tokyo",
+    indonesia: "Asia/Jakarta",
+    philippines: "Asia/Manila",
+    "south africa": "Africa/Johannesburg",
+  };
+  return map[key] || "UTC";
+}
+
+function resolveTemplate(
+  template: string,
+  values: Record<string, string | number | undefined | null>,
+): string | null {
+  let resolved = template;
+  const matches = Array.from(template.matchAll(/\{([a-zA-Z0-9_]+)\}/g));
+  for (const match of matches) {
+    const key = match[1];
+    const value = values[key];
+    if (value === undefined || value === null) return null;
+    const textValue = String(value).trim();
+    if (!textValue) return null;
+    resolved = resolved.replaceAll(`{${key}}`, textValue);
+  }
+  if (/\{[a-zA-Z0-9_]+\}/.test(resolved)) return null;
+  return resolved;
+}
+
+function isValidResolvedMessage(msg: string): boolean {
+  if (msg.includes("{")) return false;
+  // Reject only if a value resolved to exactly "0"
+  // standalone (not part of "10", "100", "40" etc)
+  if (/(?<![0-9])0(?![0-9,.KMk%])/.test(msg)) return false;
+  if (/\b0K\b/i.test(msg)) return false;
+  if (/\b0\.0\b/.test(msg)) return false;
+  if (msg.trim().length < 10) return false;
+  return true;
+}
+
+function buildTickerItems(
   dnaData: DnaDataResponse | undefined,
-  aiUsage: AiUsage | null,
   recentPosts: DnaPost[] | undefined,
   user: ReturnType<typeof useAuth>["user"],
   analyticsData: AnalyticsSummaryResponse | null | undefined,
   personaData: PersonaDataResponse,
+  publishedCount: number,
 ): MarqueeItem[] {
-  const items: MarqueeItem[] = [];
+  const now = new Date();
+  const nowMs = now.getTime();
   const posts = Array.isArray(dnaData?.posts) ? dnaData.posts : [];
-  const now = Date.now();
-  const DAY_MS = 24 * 60 * 60 * 1000;
-  const WEEK_MS = 7 * DAY_MS;
-
-  const profileFollowers = toNumberOrZero(user?.threadsFollowerCount);
-  if (profileFollowers > 0) {
-    items.push({ value: profileFollowers.toLocaleString(), label: "FOLLOWERS" });
-  }
-  const username = typeof user?.threadsUsername === "string" ? user.threadsUsername.trim() : "";
-  if (username) {
-    items.push({ value: `@${username}`, label: "CONNECTED AS" });
-  }
-
-  const account = analyticsData?.account;
-  const totalViews = toNumberOrZero(account?.views);
-  if (totalViews > 0) items.push({ value: formatNum(totalViews), label: "TOTAL VIEWS" });
-  const totalLikes = toNumberOrZero(account?.likes);
-  if (totalLikes > 0) items.push({ value: formatNum(totalLikes), label: "TOTAL LIKES" });
-  const totalReplies = toNumberOrZero(account?.replies);
-  if (totalReplies > 0) items.push({ value: formatNum(totalReplies), label: "REPLIES RECEIVED" });
-  const totalReposts = toNumberOrZero(account?.reposts);
-  if (totalReposts > 0) items.push({ value: formatNum(totalReposts), label: "REPOSTS" });
-  if (typeof account?.followers_count === "number") {
-    items.push({ value: account.followers_count.toLocaleString(), label: "FOLLOWERS" });
-  }
-  if (totalViews > 1000) {
-    items.push({ value: formatNum(totalViews), label: "TOTAL VIEWS ALL TIME" });
-  }
-  if (totalViews > 0 && totalLikes > 0) {
-    const engagementRate = Math.round((totalLikes / totalViews) * 100 * 10) / 10;
-    items.push({ value: `${engagementRate}%`, label: "ENGAGEMENT RATE" });
-  }
-  if (totalReposts > 0) {
-    items.push({ value: formatNum(totalReposts), label: "TIMES REPOSTED" });
-  }
-
   const recent = Array.isArray(recentPosts) ? recentPosts : [];
+  const account = analyticsData?.account;
+
   const recentWithTime = recent
     .map((post) => {
-      const raw = post.timestamp || post.createdAt;
-      const ms = raw ? new Date(raw).getTime() : Number.NaN;
-      return Number.isFinite(ms) ? { post, ms } : null;
+      const ms = getPostTimestampMs(post);
+      return Number.isFinite(ms) ? { post, ms: Number(ms) } : null;
     })
     .filter(Boolean) as Array<{ post: DnaPost; ms: number }>;
   recentWithTime.sort((a, b) => b.ms - a.ms);
   const latest = recentWithTime[0];
 
-  if (latest) {
-    const latestViews = getPostViews(latest.post);
+  const thisWeekPosts = recentWithTime.filter((item) => nowMs - item.ms <= WEEK_MS);
+  const lastWeekPosts = recentWithTime.filter(
+    (item) => nowMs - item.ms > WEEK_MS && nowMs - item.ms <= 2 * WEEK_MS,
+  );
+
+  const profileFollowers = toNumberOrZero(user?.threadsFollowerCount ?? account?.followers_count);
+  const activeFollowerCongrats = getActiveFollowerCongratsMilestone(profileFollowers);
+
+  const placeholders: Record<string, string | number | undefined | null> = {
+    currentTime: format(now, "h:mm a"),
+    minsLeft: minutesUntilHour(22, now),
+    minsUntilPeak: minutesUntilHour(20, now),
+  };
+
+  const dnaCount = toNumberOrZero(dnaData?.count);
+  placeholders.dnaCount = dnaCount;
+  placeholders.dnaRemaining = Math.max(15 - dnaCount, 0);
+  placeholders.publishedCount = publishedCount;
+
+  const latestMs = latest?.ms ?? null;
+  const hoursSincePost = latestMs !== null ? Math.max(0, Math.floor((nowMs - latestMs) / (60 * 60 * 1000))) : null;
+  const daysSincePost = latestMs !== null ? Math.max(0, Math.floor((nowMs - latestMs) / DAY_MS)) : null;
+  const latestViews = latest ? toNumberOrZero(
+    latest.post.views ??
+    latest.post.insightsViews ??
+    (latest.post as any).view_count ??
+    0
+  ) : 0;
+  const latestLikes = latest ? toNumberOrZero(latest.post.likes ?? latest.post.like_count) : 0;
+  console.log("[ticker] latest post fields:",
+    latest?.post ? Object.keys(latest.post) : "no post",
+    "views:", latest?.post?.views,
+    "insightsViews:", latest?.post?.insightsViews
+  );
+
+  if (latestMs !== null) {
+    placeholders.daysSincePost = daysSincePost;
+    placeholders.hoursSincePost = hoursSincePost;
+    placeholders.timeAgo = formatTimeAgo(latestMs, nowMs);
     if (latestViews > 0) {
-      items.push({ value: formatNum(latestViews), label: "VIEWS ON LAST POST" });
+      placeholders.lastViews = formatNum(latestViews);
     }
-    const latestLikes = getPostLikes(latest.post);
     if (latestLikes > 0) {
-      items.push({ value: formatNum(latestLikes), label: "LIKES ON LAST POST" });
-    }
-    if (now - latest.ms > 2 * DAY_MS) {
-      const days = Math.max(1, Math.floor((now - latest.ms) / DAY_MS));
-      items.push({ value: `${days}D`, label: "DAYS SINCE LAST POST" });
+      placeholders.lastLikes = formatNum(latestLikes);
     }
   }
 
-  const weekCount = recentWithTime.filter((item) => now - item.ms <= WEEK_MS).length;
-  if (weekCount > 0) {
-    items.push({ value: `${weekCount}`, label: "POSTS THIS WEEK" });
+  placeholders.postsThisWeek = thisWeekPosts.length;
+  placeholders.postsLastWeek = lastWeekPosts.length;
+
+  const repostCountThisWeek = thisWeekPosts.reduce((sum, item) => sum + getPostReposts(item.post), 0);
+  const repostCountLastWeek = lastWeekPosts.reduce((sum, item) => sum + getPostReposts(item.post), 0);
+  if (repostCountLastWeek > 0 && repostCountThisWeek > repostCountLastWeek) {
+    placeholders.repostPct = Math.round(((repostCountThisWeek - repostCountLastWeek) / repostCountLastWeek) * 100);
+  } else if (repostCountLastWeek === 0 && repostCountThisWeek > 0) {
+    placeholders.repostPct = 100;
   }
 
-  const topRecentByViews = [...recent].sort((a, b) => getPostViews(b) - getPostViews(a)).find((post) => getPostViews(post) > 0);
-  if (topRecentByViews) {
-    const snippet = previewText(topRecentByViews.text, 6);
-    if (snippet) {
-      items.push({ value: snippet, label: `${formatNum(getPostViews(topRecentByViews))} VIEWS` });
-    }
-  }
-  const topRecentByReplies = [...recent].sort((a, b) => getPostReplies(b) - getPostReplies(a)).find((post) => getPostReplies(post) > 0);
-  if (topRecentByReplies) {
-    const snippet = previewText(topRecentByReplies.text, 6);
-    if (snippet) {
-      items.push({ value: snippet, label: `${formatNum(getPostReplies(topRecentByReplies))} REPLIES` });
-    }
-  }
-  const topRecentByReposts = [...recent]
-    .sort((a, b) => toNumberOrZero(b.repost_count ?? b.reposts ?? b.insightsReposts) - toNumberOrZero(a.repost_count ?? a.reposts ?? a.insightsReposts))
-    .find((post) => toNumberOrZero(post.repost_count ?? post.reposts ?? post.insightsReposts) > 0);
-  if (topRecentByReposts) {
-    const snippet = previewText(topRecentByReposts.text, 6);
-    if (snippet) {
-      const repostCount = toNumberOrZero(topRecentByReposts.repost_count ?? topRecentByReposts.reposts ?? topRecentByReposts.insightsReposts);
-      items.push({ value: snippet, label: `${formatNum(repostCount)} REPOSTS` });
-    }
+  const totalRepliesWeek = thisWeekPosts.reduce((sum, item) => sum + getPostReplies(item.post), 0);
+  if (totalRepliesWeek > 0) {
+    placeholders.replyCount = totalRepliesWeek;
   }
 
-  const allTagCounts = new Map<string, number>();
-  const weekTagSet = new Set<string>();
-  const olderTagCounts = new Map<string, number>();
-  for (const item of recentWithTime) {
-    const tags = normalizeAppTags(item.post.appTag);
+  const postedDateSet = new Set(recentWithTime.map((item) => getDateKey(item.ms)));
+  let streakDays = 0;
+  const cursor = new Date(now);
+  while (postedDateSet.has(getDateKey(cursor.getTime()))) {
+    streakDays += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  if (streakDays > 0) {
+    placeholders.streakDays = streakDays;
+  }
+
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+  const postsThisMonth = recentWithTime.filter((item) => {
+    const d = new Date(item.ms);
+    return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+  }).length;
+  placeholders.postsThisMonth = postsThisMonth;
+  placeholders.daysLeft = new Date(currentYear, currentMonth + 1, 0).getDate() - now.getDate();
+
+  const topRecentByReplies = [...recent].sort((a, b) => getPostReplies(b) - getPostReplies(a))[0];
+  if (topRecentByReplies && getPostReplies(topRecentByReplies) > 0) {
+    placeholders.topReplyCount = getPostReplies(topRecentByReplies);
+  }
+
+  const postedDays = new Set<number>();
+  for (const item of recentWithTime) postedDays.add(new Date(item.ms).getDay());
+  for (const post of posts) {
+    const dayOfWeekRaw = Number(post.dayOfWeek);
+    if (Number.isInteger(dayOfWeekRaw) && dayOfWeekRaw >= 0 && dayOfWeekRaw <= 6) {
+      postedDays.add(dayOfWeekRaw);
+      continue;
+    }
+    const ms = getPostTimestampMs(post);
+    if (ms) postedDays.add(new Date(ms).getDay());
+  }
+  const neverPostedDay = [1, 2, 3, 4, 5, 6, 0].find((day) => !postedDays.has(day));
+  if (neverPostedDay !== undefined) {
+    placeholders.dayName = DAY_NAMES[neverPostedDay];
+  }
+
+  const totalViews = toNumberOrZero(account?.views) || posts.reduce((sum, post) => sum + getPostViews(post), 0);
+  const totalLikes = toNumberOrZero(account?.likes) || posts.reduce((sum, post) => sum + getPostLikes(post), 0);
+  if (totalViews > 0) placeholders.totalViews = formatNum(totalViews);
+  if (totalLikes > 0) placeholders.totalLikes = formatNum(totalLikes);
+
+  if (profileFollowers > 0) {
+    const nextMilestoneValue = getNextFollowerMilestone(profileFollowers);
+    placeholders.followersToNext = Math.max(0, nextMilestoneValue - profileFollowers);
+    placeholders.nextMilestone = formatNum(nextMilestoneValue);
+  }
+
+  let bestHour: number | null = null;
+  const hourStats = new Map<number, { views: number; count: number }>();
+  for (const post of posts) {
+    const hour = Number(post.hourOfDay);
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) continue;
+    const views = getPostViews(post);
+    if (views <= 0) continue;
+    const current = hourStats.get(hour) || { views: 0, count: 0 };
+    hourStats.set(hour, { views: current.views + views, count: current.count + 1 });
+  }
+  let bestHourAvg = 0;
+  hourStats.forEach((stats, hour) => {
+    const avg = stats.views / stats.count;
+    if (avg > bestHourAvg) {
+      bestHourAvg = avg;
+      bestHour = hour;
+    }
+  });
+  if (bestHour !== null) {
+    placeholders.bestHourStart = formatHourLabel(bestHour);
+    placeholders.peakStart = formatHourLabel(bestHour);
+    placeholders.peakEnd = formatHourLabel(bestHour + 2);
+  } else {
+    placeholders.peakStart = formatHourLabel(20);
+    placeholders.peakEnd = formatHourLabel(22);
+  }
+
+  const tagStats = new Map<string, { views: number; reposts: number; count: number; lastMs: number }>();
+  for (const post of posts) {
+    const tags = normalizeAppTags(post.appTag);
     if (!tags.length) continue;
+    const views = getPostViews(post);
+    const reposts = getPostReposts(post);
+    const ms = getPostTimestampMs(post) ?? 0;
     for (const tag of tags) {
-      allTagCounts.set(tag, (allTagCounts.get(tag) || 0) + 1);
-      if (now - item.ms <= WEEK_MS) {
-        weekTagSet.add(tag);
+      const current = tagStats.get(tag) || { views: 0, reposts: 0, count: 0, lastMs: 0 };
+      tagStats.set(tag, {
+        views: current.views + views,
+        reposts: current.reposts + reposts,
+        count: current.count + 1,
+        lastMs: Math.max(current.lastMs, ms),
+      });
+    }
+  }
+  let topTag: string | null = null;
+  let topTagAvgViews = 0;
+  tagStats.forEach((stats, tag) => {
+    const avg = stats.count > 0 ? stats.views / stats.count : 0;
+    if (avg > topTagAvgViews) {
+      topTagAvgViews = avg;
+      topTag = tag;
+    }
+  });
+  if (topTag && topTagAvgViews > 0) {
+    placeholders.topTag = topTag;
+    placeholders.avgViews = formatNum(topTagAvgViews);
+    const topTagLastMs = tagStats.get(topTag)?.lastMs ?? 0;
+    if (topTagLastMs > 0) {
+      placeholders.daysSinceTag = Math.max(0, Math.floor((nowMs - topTagLastMs) / DAY_MS));
+    }
+    const topTagStats = tagStats.get(topTag);
+    if (topTagStats) {
+      const topAvgReposts = topTagStats.reposts / Math.max(topTagStats.count, 1);
+      const others = Array.from(tagStats.entries()).filter(([tag]) => tag !== topTag);
+      const otherReposts = others.reduce((sum, [, stats]) => sum + stats.reposts, 0);
+      const otherCount = others.reduce((sum, [, stats]) => sum + stats.count, 0);
+      const otherAvgReposts = otherCount > 0 ? otherReposts / otherCount : 0;
+      if (topAvgReposts > 0 && otherAvgReposts > 0) {
+        placeholders.repostMultiplier = Math.round((topAvgReposts / otherAvgReposts) * 10) / 10;
+      }
+    }
+  }
+
+  const dayStats = new Map<number, { views: number; count: number }>();
+  for (const post of posts) {
+    const views = getPostViews(post);
+    if (views <= 0) continue;
+    let day: number;
+    const dayOfWeekRaw = Number(post.dayOfWeek);
+    if (Number.isInteger(dayOfWeekRaw) && dayOfWeekRaw >= 0 && dayOfWeekRaw <= 6) {
+      day = dayOfWeekRaw;
+    } else {
+      const ms = getPostTimestampMs(post);
+      if (!ms) continue;
+      day = new Date(ms).getDay();
+    }
+    const current = dayStats.get(day) || { views: 0, count: 0 };
+    dayStats.set(day, { views: current.views + views, count: current.count + 1 });
+  }
+  let bestDay: number | null = null;
+  let bestDayAvg = 0;
+  dayStats.forEach((stats, day) => {
+    const avg = stats.views / stats.count;
+    if (avg > bestDayAvg) {
+      bestDayAvg = avg;
+      bestDay = day;
+    }
+  });
+  if (bestDay !== null) {
+    placeholders.bestDay = DAY_NAMES[bestDay];
+  }
+
+  const hookStats = new Map<string, { replies: number; count: number }>();
+  for (const post of posts) {
+    const style = typeof post.hookStyle === "string" ? post.hookStyle.trim() : "";
+    if (!style) continue;
+    const current = hookStats.get(style) || { replies: 0, count: 0 };
+    hookStats.set(style, { replies: current.replies + getPostReplies(post), count: current.count + 1 });
+  }
+  let bestHookStyle: string | null = null;
+  let bestHookAvgReplies = 0;
+  hookStats.forEach((stats, style) => {
+    const avg = stats.count > 0 ? stats.replies / stats.count : 0;
+    if (avg > bestHookAvgReplies) {
+      bestHookAvgReplies = avg;
+      bestHookStyle = style;
+    }
+  });
+  if (bestHookStyle) {
+    placeholders.hookStyle = toTitleCase(bestHookStyle);
+    const otherStats = Array.from(hookStats.entries()).filter(([style]) => style !== bestHookStyle);
+    const othersReplies = otherStats.reduce((sum, [, stats]) => sum + stats.replies, 0);
+    const othersCount = otherStats.reduce((sum, [, stats]) => sum + stats.count, 0);
+    const othersAvg = othersCount > 0 ? othersReplies / othersCount : 0;
+    if (bestHookAvgReplies > 0 && othersAvg > 0) {
+      placeholders.hookMultiplier = Math.round((bestHookAvgReplies / othersAvg) * 10) / 10;
+    }
+  }
+
+  const lengthCandidates = posts
+    .filter((post) => toNumberOrZero(post.postLength) > 0 && getPostViews(post) > 0)
+    .sort((a, b) => getPostViews(b) - getPostViews(a));
+  if (lengthCandidates.length > 0) {
+    const topCount = Math.max(1, Math.ceil(lengthCandidates.length * 0.3));
+    const topSlice = lengthCandidates.slice(0, topCount);
+    const avgLength = topSlice.reduce((sum, post) => sum + toNumberOrZero(post.postLength), 0) / topSlice.length;
+    placeholders.optimalLength = Math.round(avgLength);
+  }
+
+  const ctaTrue = posts.filter((post) => Boolean(post.hasCta));
+  const ctaFalse = posts.filter((post) => post.hasCta === false);
+  if (ctaTrue.length > 0 && ctaFalse.length > 0) {
+    const avgTrue = ctaTrue.reduce((sum, post) => sum + getPostReplies(post), 0) / ctaTrue.length;
+    const avgFalse = ctaFalse.reduce((sum, post) => sum + getPostReplies(post), 0) / ctaFalse.length;
+    if (avgTrue > 0 && avgFalse > 0) {
+      placeholders.ctaBoost = Math.round(((avgTrue - avgFalse) / avgFalse) * 100);
+    }
+  }
+
+  const mediaPosts = posts.filter((post) => Boolean(post.hasMedia));
+  const textPosts = posts.filter((post) => post.hasMedia === false);
+  if (mediaPosts.length > 0 && textPosts.length > 0) {
+    const mediaAvg = mediaPosts.reduce((sum, post) => sum + getPostViews(post), 0) / mediaPosts.length;
+    const textAvg = textPosts.reduce((sum, post) => sum + getPostViews(post), 0) / textPosts.length;
+    placeholders.mediaWinner = mediaAvg >= textAvg ? "Media" : "Text";
+  }
+
+  const morningPosts = posts.filter((post) => Number(post.hourOfDay) >= 6 && Number(post.hourOfDay) <= 11);
+  const eveningPosts = posts.filter((post) => Number(post.hourOfDay) >= 17 && Number(post.hourOfDay) <= 23);
+  if (morningPosts.length > 0 && eveningPosts.length > 0) {
+    const morningAvg = morningPosts.reduce((sum, post) => sum + getPostViews(post), 0) / morningPosts.length;
+    const eveningAvg = eveningPosts.reduce((sum, post) => sum + getPostViews(post), 0) / eveningPosts.length;
+    if (morningAvg > 0 && eveningAvg > 0) {
+      placeholders.amOrPm = morningAvg >= eveningAvg ? "Morning" : "Evening";
+      const high = Math.max(morningAvg, eveningAvg);
+      const low = Math.min(morningAvg, eveningAvg);
+      placeholders.pctDiff = Math.round(((high - low) / low) * 100);
+    }
+  }
+
+  const streakSource = [...recentWithTime].map((item) => ({
+    hookStyle: typeof item.post.hookStyle === "string" ? item.post.hookStyle.trim() : "",
+  }));
+  if (streakSource.length > 0 && streakSource[0].hookStyle) {
+    const firstHook = streakSource[0].hookStyle;
+    let streakCount = 0;
+    for (const item of streakSource) {
+      if (item.hookStyle && item.hookStyle === firstHook) streakCount += 1;
+      else break;
+    }
+    if (streakCount > 1) {
+      placeholders.streakCount = streakCount;
+      if (!placeholders.hookStyle) {
+        placeholders.hookStyle = toTitleCase(firstHook);
+      }
+    }
+  }
+
+  const personaCountries = Array.isArray(personaData?.demographics?.countries) ? personaData.demographics.countries : [];
+  const personaCities = Array.isArray(personaData?.demographics?.cities) ? personaData.demographics.cities : [];
+  const personaAges = Array.isArray(personaData?.demographics?.ages) ? personaData.demographics.ages : [];
+  const personaGenders = Array.isArray(personaData?.demographics?.genders) ? personaData.demographics.genders : [];
+  const hasPersonaDemographics =
+    personaCountries.length > 0 || personaCities.length > 0 || personaAges.length > 0 || personaGenders.length > 0;
+
+  if (personaData?.eligible && hasPersonaDemographics && personaData.demographics) {
+    const topCountry = getTopBreakdownItem(personaData.demographics.countries);
+    const topCity = getTopBreakdownItem(personaData.demographics.cities);
+    const topGender = getTopBreakdownItem(personaData.demographics.genders);
+    const topAge = getTopBreakdownItem(personaData.demographics.ages);
+
+    if (topCountry?.label) placeholders.topCountry = String(topCountry.label);
+    if (topCity?.label) placeholders.topCity = String(topCity.label);
+    if (topGender?.label) placeholders.topGender = String(topGender.label);
+    if (topAge?.label) placeholders.topAge = String(topAge.label);
+
+    if (topGender?.label) {
+      if (typeof topGender.sharePct === "number") {
+        placeholders.genderPct = Math.round(topGender.sharePct);
       } else {
-        olderTagCounts.set(tag, (olderTagCounts.get(tag) || 0) + 1);
-      }
-    }
-  }
-
-  let frequentTag: string | null = null;
-  let frequentTagCount = 0;
-  allTagCounts.forEach((value, key) => {
-    if (value > frequentTagCount) {
-      frequentTag = key;
-      frequentTagCount = value;
-    }
-  });
-  if (frequentTag) {
-    items.push({ value: frequentTag, label: "YOUR TOP TOPIC" });
-  }
-
-  let staleTag: string | null = null;
-  let staleTagCount = 0;
-  olderTagCounts.forEach((value, key) => {
-    if (weekTagSet.has(key)) return;
-    if (value > staleTagCount) {
-      staleTag = key;
-      staleTagCount = value;
-    }
-  });
-  if (staleTag) {
-    items.push({ value: staleTag, label: "DUE FOR FOLLOW-UP" });
-  }
-
-  if (personaData?.eligible && personaData.demographics) {
-    const topCountries = topBreakdownItems(personaData.demographics.countries, 3);
-    for (const country of topCountries) {
-      items.push({ value: String(country.label).toUpperCase(), label: "FOLLOWERS FROM" });
-    }
-
-    const topCities = topBreakdownItems(personaData.demographics.cities, 3);
-    for (const city of topCities) {
-      items.push({ value: String(city.label).toUpperCase(), label: "CITY LOVING YOUR CONTENT" });
-    }
-
-    const allGenders = topBreakdownItems(personaData.demographics.genders, 20);
-    if (allGenders.length > 0) {
-      const totalGender = allGenders.reduce((sum, item) => sum + toNumberOrZero(item.value), 0);
-      const topGender = allGenders[0];
-      const topGenderValue = toNumberOrZero(topGender.value);
-      const sharePct = totalGender > 0 ? Math.round((topGenderValue / totalGender) * 100) : 0;
-      items.push({
-        value: `${sharePct}% ${String(topGender.label).toUpperCase()}`,
-        label: "OF YOUR AUDIENCE IS",
-      });
-    }
-
-    const topAges = topBreakdownItems(personaData.demographics.ages, 10);
-    if (topAges.length > 0) {
-      items.push({
-        value: String(topAges[0].label).toUpperCase(),
-        label: "TOP AGE GROUP ENGAGING WITH YOU",
-      });
-    }
-    if (topAges.length > 1) {
-      items.push({
-        value: `${String(topAges[1].label).toUpperCase()} & ${String(topAges[0].label).toUpperCase()}`,
-        label: "MOST ACTIVE AGE GROUPS",
-      });
-    }
-  }
-
-  const personaPosts = Array.isArray(personaData?.mapping?.posts) ? personaData?.mapping?.posts || [] : [];
-  const topPersonaByViews = [...personaPosts]
-    .sort((a, b) => personaPostMetric(b, "views") - personaPostMetric(a, "views"))
-    .find((post) => personaPostMetric(post, "views") > 0);
-  if (topPersonaByViews) {
-    const snippet = previewText(topPersonaByViews.text, 8);
-    if (snippet) {
-      items.push({ value: snippet, label: `${formatNum(personaPostMetric(topPersonaByViews, "views"))} VIEWS \u2014 TOP POST` });
-    }
-  }
-
-  const personaByLikes = [...personaPosts]
-    .filter((post) => personaPostMetric(post, "likes") > 0)
-    .sort((a, b) => personaPostMetric(b, "likes") - personaPostMetric(a, "likes"));
-  if (personaByLikes.length > 1) {
-    const secondTopByLikes = personaByLikes[1];
-    const snippet = previewText(secondTopByLikes.text, 8);
-    if (snippet) {
-      items.push({ value: snippet, label: `${formatNum(personaPostMetric(secondTopByLikes, "likes"))} LIKES \u2014 2ND TOP POST` });
-    }
-  }
-
-  const topPersonaByReplies = [...personaPosts]
-    .sort((a, b) => personaPostMetric(b, "replies") - personaPostMetric(a, "replies"))
-    .find((post) => personaPostMetric(post, "replies") > 0);
-  if (topPersonaByReplies) {
-    const snippet = previewText(topPersonaByReplies.text, 8);
-    if (snippet) {
-      items.push({ value: snippet, label: `${formatNum(personaPostMetric(topPersonaByReplies, "replies"))} REPLIES \u2014 MOST DISCUSSED` });
-    }
-  }
-
-  const count = toNumberOrZero(dnaData?.count);
-  if (count > 0 && count < 15) {
-    items.push({ value: `${count}/15`, label: "DNA POSTS TRACKED" });
-  }
-
-  if (dnaData?.ready && posts.length > 0) {
-    const byTag = new Map<string, { viewsSum: number; count: number }>();
-    for (const post of posts) {
-      const tags = normalizeAppTags(post.appTag);
-      if (!tags.length) continue;
-      const views = getPostViews(post);
-      for (const tag of tags) {
-        const current = byTag.get(tag) || { viewsSum: 0, count: 0 };
-        byTag.set(tag, { viewsSum: current.viewsSum + views, count: current.count + 1 });
-      }
-    }
-    let bestTag: string | null = null;
-    let bestTagAvg = 0;
-    byTag.forEach((stats, tag) => {
-      if (!stats.count) return;
-      const avg = stats.viewsSum / stats.count;
-      if (avg > bestTagAvg) {
-        bestTagAvg = avg;
-        bestTag = tag;
-      }
-    });
-    if (bestTag && bestTagAvg > 0) {
-      items.push({ value: bestTag, label: "HIGHEST AVG VIEWS TOPIC" });
-    }
-
-    const hourReadyPosts = posts.filter((post) => getPostViews(post) > 0 && Number.isInteger(post.hourOfDay));
-    if (hourReadyPosts.length > 0) {
-      const byHour = new Map<number, { viewsSum: number; count: number }>();
-      for (const post of hourReadyPosts) {
-        const hour = Number(post.hourOfDay);
-        if (hour < 0 || hour > 23) continue;
-        const current = byHour.get(hour) || { viewsSum: 0, count: 0 };
-        byHour.set(hour, { viewsSum: current.viewsSum + getPostViews(post), count: current.count + 1 });
-      }
-      let bestHour = -1;
-      let bestHourAvg = 0;
-      byHour.forEach((stats, hour) => {
-        if (!stats.count) return;
-        const avg = stats.viewsSum / stats.count;
-        if (avg > bestHourAvg) {
-          bestHourAvg = avg;
-          bestHour = hour;
+        const allGender = personaGenders;
+        const total = allGender.reduce((sum, item) => sum + toNumberOrZero(item?.value), 0);
+        const topValue = toNumberOrZero(topGender.value);
+        if (total > 0 && topValue > 0) {
+          placeholders.genderPct = Math.round((topValue / total) * 100);
         }
-      });
-      if (bestHour >= 0) {
-        items.push({ value: formatHourRange(bestHour), label: "BEST TIME TO POST" });
       }
     }
 
-    const hookStyleViews = new Map<string, { viewsSum: number; count: number }>();
-    for (const post of posts) {
-      const hookStyle = typeof post.hookStyle === "string" ? post.hookStyle.trim() : "";
-      if (!hookStyle) continue;
-      const current = hookStyleViews.get(hookStyle) || { viewsSum: 0, count: 0 };
-      hookStyleViews.set(hookStyle, { viewsSum: current.viewsSum + getPostViews(post), count: current.count + 1 });
+    if (topCountry?.label) {
+      const timezone = getCountryTimezone(String(topCountry.label));
+      const localTime = new Intl.DateTimeFormat("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+        timeZone: timezone,
+      }).format(now);
+      const localHour = Number(
+        new Intl.DateTimeFormat("en-US", {
+          hour: "numeric",
+          hour12: false,
+          timeZone: timezone,
+        }).format(now),
+      );
+      placeholders.localTime = localTime;
+      placeholders.awakeAsleep = localHour >= 6 && localHour < 23 ? "awake" : "asleep";
     }
-    let bestHookStyle: string | null = null;
-    let bestHookAvg = 0;
-    hookStyleViews.forEach((value, key) => {
-      if (!value.count) return;
-      const avg = value.viewsSum / value.count;
-      if (avg > bestHookAvg) {
-        bestHookAvg = avg;
-        bestHookStyle = key;
+  }
+
+  const timePoolRaw = TICKER_MESSAGES
+    .filter((message) => message.category === "time")
+    .filter((message) => isConditionMet(message));
+
+  const motivPoolRaw = TICKER_MESSAGES.filter((message) => message.category === "motiv");
+  const dnaPoolRaw = dnaData?.ready === true ? TICKER_MESSAGES.filter((message) => message.category === "dna") : [];
+
+  const hasRecentPostsData = recent.length > 0;
+  const behaviorPoolRaw = hasRecentPostsData
+    ? TICKER_MESSAGES.filter((message) => message.category === "behavior")
+    : [];
+
+  const hasMilestoneData = profileFollowers > 0;
+  const milestonePoolRaw = hasMilestoneData
+    ? TICKER_MESSAGES.filter((message) => message.category === "milestone")
+    : [];
+
+  const hasGlobalData = personaData?.eligible === true && hasPersonaDemographics;
+  const globalPoolRaw = hasGlobalData
+    ? TICKER_MESSAGES.filter((message) => message.category === "global")
+    : [];
+
+  const usedDynamicKeys = new Set<string>();
+  const nowDay = now.getDay();
+  const nowHour = now.getHours();
+  const isSundayEveningWindow = nowDay === 0 && nowHour >= 18 && nowHour < 22;
+  const isPeakWindow = nowHour >= 20 && nowHour < 22;
+
+  const numericPlaceholder = (key: string): number => toNumberOrZero(placeholders[key]);
+  const shouldIncludeMessage = (message: (typeof TICKER_MESSAGES)[number]): boolean => {
+    switch (message.id) {
+      case "peak_open":
+        return isConditionMet(message) && !isPeakWindow;
+      case "peak_left":
+        return isConditionMet(message) && isPeakWindow;
+      case "sunday_general":
+        return isConditionMet(message) && !isSundayEveningWindow;
+      case "sunday_evening":
+        return isConditionMet(message) && isSundayEveningWindow;
+      case "behavior_12h":
+        return hoursSincePost !== null && hoursSincePost >= 12 && daysSincePost !== null && daysSincePost < 3;
+      case "behavior_3d":
+        return daysSincePost !== null && daysSincePost >= 3;
+      case "dna_tag_gap":
+        return numericPlaceholder("daysSinceTag") >= 3;
+      case "behavior_weekly":
+        return numericPlaceholder("postsLastWeek") > 0;
+      case "behavior_streak":
+        return numericPlaceholder("streakDays") >= 2;
+      case "milestone_dna":
+        return dnaCount > 0 && dnaCount < 15;
+      case "dna_hook_style":
+        return numericPlaceholder("hookMultiplier") >= 1.2;
+      case "dna_length":
+        return numericPlaceholder("optimalLength") > 50;
+      case "behavior_last_post":
+        return latestMs !== null && (latestViews > 0 || latestLikes > 0);
+      case "global_top_country":
+      case "global_top_city":
+      case "global_gender":
+      case "global_age":
+      case "global_country_time":
+      case "global_reposts_trend":
+        return hasGlobalData;
+      default:
+        return true;
+    }
+  };
+
+  const getPrimaryDynamicKey = (message: (typeof TICKER_MESSAGES)[number]): string | null => {
+    switch (message.id) {
+      case "peak_open":
+      case "peak_left":
+        return "peak_window";
+      case "sunday_general":
+      case "sunday_evening":
+        return "sunday_window";
+      case "behavior_12h":
+      case "behavior_3d":
+        return "silence";
+      case "behavior_last_post":
+        return "last_post";
+      case "dna_top_tag_views":
+      case "dna_top_tag_strong":
+      case "dna_tag_gap":
+      case "dna_reposts":
+      case "dna_formula":
+        return "topTag";
+      default: {
+        if (!message.dynamic) return null;
+        const match = message.message.match(/\{([a-zA-Z0-9_]+)\}/);
+        return match ? match[1] : `id:${message.id}`;
       }
-    });
-    if (bestHookStyle) {
-      items.push({ value: bestHookStyle, label: "YOUR BEST HOOK STYLE" });
     }
-  }
+  };
 
-  const used = toNumberOrZero(aiUsage?.used);
-  if (aiUsage && !aiUsage.unlimited && used > 0) {
-    items.push({ value: `${used}/10`, label: "AI REQUESTS TODAY" });
-  }
+  const resolveMessage = (message: (typeof TICKER_MESSAGES)[number]): (typeof TICKER_MESSAGES)[number] | null => {
+    if (!shouldIncludeMessage(message)) return null;
+    const primaryKey = getPrimaryDynamicKey(message);
+    if (primaryKey && usedDynamicKeys.has(primaryKey)) return null;
 
-  items.push({ value: "THREADS", label: "POWERED BY" });
-  items.push({ value: "THREADFLOW", label: "CONTENT INTELLIGENCE BY" });
-  items.push({ value: "PERFORMANCE DNA", label: "TRACKING YOUR" });
+    if (message.id === "milestone_followers" && activeFollowerCongrats) {
+      const milestoneLabel = formatNum(activeFollowerCongrats.milestone);
+      const messageText = activeFollowerCongrats.major
+        ? `Major milestone -- ${milestoneLabel} followers reached`
+        : `Congrats -- ${milestoneLabel} followers reached`;
+      if (!isValidResolvedMessage(messageText)) return null;
+      if (primaryKey) usedDynamicKeys.add(primaryKey);
+      return { ...message, message: messageText };
+    }
 
-  return items;
+    if (message.id === "behavior_last_post") {
+      const timeAgo = typeof placeholders.timeAgo === "string" ? placeholders.timeAgo : "";
+      if (!timeAgo) return null;
+      const messageText =
+        latestViews > 0
+          ? `Last post -- ${formatNum(latestViews)} views -- ${timeAgo} ago`
+          : latestLikes > 0
+            ? `Last post -- ${formatNum(latestLikes)} likes -- ${timeAgo} ago`
+            : null;
+      if (!messageText) return null;
+      if (!isValidResolvedMessage(messageText)) return null;
+      if (primaryKey) usedDynamicKeys.add(primaryKey);
+      return { ...message, message: messageText };
+    }
+
+    if (message.id === "dna_best_day") {
+      const bestDayName = typeof placeholders.bestDay === "string" ? placeholders.bestDay : "";
+      if (!bestDayName) return null;
+      const todayName = DAY_NAMES[now.getDay()];
+      if (bestDayName !== todayName) return null;
+      const bestDayText = `${bestDayName} is your best day -- Post today`;
+      if (!isValidResolvedMessage(bestDayText)) return null;
+      if (primaryKey) usedDynamicKeys.add(primaryKey);
+      return { ...message, message: bestDayText };
+    }
+
+    const resolved = resolveTemplate(message.message, placeholders);
+    if (!resolved) return null;
+    if (!isValidResolvedMessage(resolved)) return null;
+    if (primaryKey) usedDynamicKeys.add(primaryKey);
+    return { ...message, message: resolved };
+  };
+
+  const resolvePool = (pool: typeof TICKER_MESSAGES): (typeof TICKER_MESSAGES)[number][] =>
+    shuffleArray(pool)
+      .map((message) => resolveMessage(message))
+      .filter((message): message is (typeof TICKER_MESSAGES)[number] => Boolean(message));
+
+  const timePool = resolvePool(timePoolRaw);
+  const motivPool = resolvePool(motivPoolRaw);
+  const cappedMotivPool = shuffleArray(motivPool).slice(0, 2);
+  const dnaPool = resolvePool(dnaPoolRaw);
+  const behaviorPool = resolvePool(behaviorPoolRaw);
+  const milestonePool = resolvePool(milestonePoolRaw);
+  const globalPool = resolvePool(globalPoolRaw);
+
+  const resolvedMessages = [
+    ...timePool,
+    ...cappedMotivPool,
+    ...dnaPool,
+    ...behaviorPool,
+    ...milestonePool,
+    ...globalPool,
+  ];
+
+  const interleaved = buildInterleavedPool(resolvedMessages);
+  return interleaved.map((item) => ({
+    category: item.category,
+    value: item.message,
+    tone:
+      item.id === "milestone_followers" && activeFollowerCongrats?.major
+        ? "milestone-major"
+        : item.category === "milestone"
+          ? "milestone"
+          : "default",
+  }));
 }
-
 function getFriendlyAiError(err: unknown): string {
   const fallback = "AI request failed. Please try again.";
   const rawMessage = typeof (err as any)?.message === "string" ? (err as any).message : "";
@@ -895,7 +1302,7 @@ function AiPostAssistant({
         <div className="h-[170px] overflow-y-auto rounded-md border border-border bg-muted/20 p-2 space-y-2">
           {showDailyLimitPrompt && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 space-y-2">
-              <p className="text-xs font-medium text-destructive">✦ Daily limit reached</p>
+              <p className="text-xs font-medium text-destructive">âœ¦ Daily limit reached</p>
               <p className="text-xs text-muted-foreground">
                 You've used all 10 free AI requests today. Resets at midnight.
               </p>
@@ -934,9 +1341,9 @@ function AiPostAssistant({
         {usage && (
           <div className="flex justify-end">
             {usage.plan === "pro" ? (
-              <span className="text-xs text-orange-400">✦ Pro · Unlimited</span>
+              <span className="text-xs text-orange-400">âœ¦ Pro -- Unlimited</span>
             ) : usage.unlimited ? (
-              <span className="text-xs text-muted-foreground">✦ Own key · Unlimited</span>
+              <span className="text-xs text-muted-foreground">âœ¦ Own key -- Unlimited</span>
             ) : (
               <span
                 className={`text-xs ${
@@ -947,7 +1354,7 @@ function AiPostAssistant({
                       : "text-muted-foreground"
                 }`}
               >
-                ✦ {usage.used} / {usage.limit} today
+                âœ¦ {usage.used} / {usage.limit} today
               </span>
             )}
           </div>
@@ -1171,9 +1578,9 @@ function RecentPosts({
                           .map((tag: string) => (
                             <span
                               key={tag}
-                              className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary/10 text-primary border border-primary/20"
+                              className="inline-flex items-center rounded-md border border-black/10 bg-white px-2.5 py-1 text-[11px] font-['JetBrains_Mono'] font-extrabold tracking-[0.05em] text-black shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
                             >
-                              {tag}
+                              #{tag.toUpperCase()}
                             </span>
                           ))}
                       </div>
@@ -1190,7 +1597,7 @@ function RecentPosts({
     </Card>
   );
 }
-// ─── Main Dashboard ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function Dashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -1238,6 +1645,109 @@ export default function Dashboard() {
     enabled: !!user?.threadsAccessToken,
     retry: false,
   });
+  const scheduledStatusMapRef = useRef<Record<string, string>>({});
+  const hasInitializedScheduledStatusRef = useRef(false);
+  const followersForNotification = toNumberOrZero(
+    user?.threadsFollowerCount ?? analyticsData?.account?.followers_count,
+  );
+
+  useEffect(() => {
+    const currentStatusMap: Record<string, string> = {};
+    for (const post of scheduledPosts) {
+      if (!post?.id) continue;
+      currentStatusMap[String(post.id)] = String(post.status ?? "");
+    }
+
+    if (!hasInitializedScheduledStatusRef.current) {
+      scheduledStatusMapRef.current = currentStatusMap;
+      hasInitializedScheduledStatusRef.current = true;
+      return;
+    }
+
+    for (const post of scheduledPosts) {
+      if (!post?.id) continue;
+      const id = String(post.id);
+      const prevStatus = scheduledStatusMapRef.current[id];
+      const nextStatus = String(post.status ?? "");
+      if (!prevStatus || prevStatus === nextStatus) continue;
+
+      if (prevStatus === "pending" && nextStatus === "published") {
+        addNotification({
+          type: "success",
+          title: "Scheduled post published",
+          message: "Your post went live as scheduled",
+        });
+      } else if (prevStatus === "pending" && nextStatus === "failed") {
+        addNotification({
+          type: "error",
+          title: "Scheduled post failed",
+          message: "A scheduled post could not be published — check your connection",
+        });
+      }
+    }
+
+    scheduledStatusMapRef.current = currentStatusMap;
+  }, [scheduledPosts]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (toNumberOrZero(dnaData?.count) < 15) return;
+
+    try {
+      if (window.localStorage.getItem(DNA_UNLOCK_STORAGE_KEY) === "true") return;
+      addNotification({
+        type: "dna",
+        title: "Performance DNA unlocked",
+        message: "15 posts tracked -- your personalized insights are now active",
+      });
+      window.localStorage.setItem(DNA_UNLOCK_STORAGE_KEY, "true");
+    } catch {
+      // Ignore localStorage access issues in restricted contexts.
+    }
+  }, [dnaData?.count]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!user?.threadsAccessToken) return;
+    if (followersForNotification <= 0) return;
+
+    try {
+      const rawLastCount = window.localStorage.getItem(FOLLOWER_COUNT_STORAGE_KEY);
+      const lastCount = rawLastCount ? Number(rawLastCount) : Number.NaN;
+      if (Number.isFinite(lastCount) && followersForNotification > lastCount) {
+        const gained = followersForNotification - lastCount;
+        addNotification({
+          type: "info",
+          title: "Follower growth detected",
+          message: `+${gained.toLocaleString()} followers -- now at ${followersForNotification.toLocaleString()}`,
+        });
+      }
+      window.localStorage.setItem(FOLLOWER_COUNT_STORAGE_KEY, String(followersForNotification));
+
+      const activeAchievement = getActiveFollowerCongratsMilestone(followersForNotification);
+      if (!activeAchievement) return;
+
+      const achievedMilestone = activeAchievement.milestone;
+      const rawLastMilestone = window.localStorage.getItem(FOLLOWER_MILESTONE_STORAGE_KEY);
+      const lastMilestone = rawLastMilestone ? Number(rawLastMilestone) : 0;
+
+      if (achievedMilestone > lastMilestone) {
+        const milestoneLabel = formatNum(achievedMilestone);
+        addNotification({
+          type: "milestone",
+          title: activeAchievement.major
+            ? "Major milestone reached"
+            : `${milestoneLabel} followers reached`,
+          message: activeAchievement.major
+            ? `${milestoneLabel} followers unlocked -- strong momentum`
+            : `Congrats -- you crossed ${milestoneLabel} followers`,
+        });
+        window.localStorage.setItem(FOLLOWER_MILESTONE_STORAGE_KEY, String(achievedMilestone));
+      }
+    } catch {
+      // Ignore localStorage access issues in restricted contexts.
+    }
+  }, [followersForNotification, user?.threadsAccessToken]);
 
   useEffect(() => {
     const syncProMode = () => {
@@ -1290,9 +1800,15 @@ export default function Dashboard() {
     });
 
   const marqueeItems = useMemo(() => {
-    const builtItems = buildMarqueeItems(dnaData, usage || null, recentPostsForInsight, user, analyticsData, personaData);
-    return shuffleItems(builtItems);
-  }, [dnaData, usage, recentPostsForInsight, user, analyticsData, personaData]);
+    return buildTickerItems(
+      dnaData,
+      recentPostsForInsight,
+      user,
+      analyticsData,
+      personaData,
+      publishedPosts.length,
+    );
+  }, [dnaData, recentPostsForInsight, user, analyticsData, personaData, publishedPosts.length]);
   const marqueeLoopItems = useMemo(() => [...marqueeItems, ...marqueeItems], [marqueeItems]);
 
   const quickPostCompactStyles = `
@@ -1358,17 +1874,25 @@ export default function Dashboard() {
                 }}
               >
                 {marqueeLoopItems.map((item, index) => (
-                  <span key={`${item.label}-${item.value}-${index}`} className="inline-flex items-center">
+                  <span key={`${item.category}-${item.value}-${index}`} className="inline-flex items-center">
                     <span className={`inline-flex items-baseline gap-1.5 ${item.value.length > 20 ? "mx-8" : "mx-4"}`}>
-                      <span className="font-medium tracking-wider text-muted-foreground/70 uppercase" style={{ fontSize: "14.4px" }}>
-                        {item.label}
-                      </span>
-                      <span className="font-bold tracking-widest" style={{ color: "#FB923C", fontSize: "14.4px" }}>
+                      <span
+                        className="font-bold tracking-widest"
+                        style={{
+                          color:
+                            item.tone === "milestone-major"
+                              ? "#FBBF24"
+                              : item.tone === "milestone"
+                                ? "#2DD4BF"
+                                : "#FB923C",
+                          fontSize: "14.4px",
+                        }}
+                      >
                         {item.value}
                       </span>
                     </span>
                     {index < marqueeLoopItems.length - 1 ? (
-                      <span className="text-muted-foreground/30 text-xs mx-2">{"\u00b7"}</span>
+                      <span className="text-muted-foreground/30 text-xs mx-2">{" -- "}</span>
                     ) : null}
                   </span>
                 ))}
@@ -1537,6 +2061,8 @@ export default function Dashboard() {
     </div>
   );
 }
+
+
 
 
 

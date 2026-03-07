@@ -18,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth-context";
+import { addNotification } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
 import type { ScheduledPost } from "@shared/schema";
 
@@ -387,6 +388,11 @@ export function PostComposerCard({
         title: "Post published!",
         description: topicInput ? `Tagged as ${topicInput}` : "Your thread is now live on Threads.",
       });
+      addNotification({
+        type: "success",
+        title: "Post published",
+        message: "Your post is now live on Threads",
+      });
       resetComposer();
       queryClient.invalidateQueries({ queryKey: ["/api/posts/recent"] });
       queryClient.invalidateQueries({ queryKey: ["/api/posts/scheduled"] });
@@ -403,6 +409,11 @@ export function PostComposerCard({
     mutationFn: (data: any) => apiRequest("POST", "/api/posts/schedule", data),
     onSuccess: () => {
       toast({ title: "Post scheduled!", description: "Your thread will be published at the set time." });
+      addNotification({
+        type: "info",
+        title: "Post scheduled",
+        message: "Your post has been queued for publishing",
+      });
       resetComposer();
       queryClient.invalidateQueries({ queryKey: ["/api/posts/scheduled"] });
     },
@@ -770,9 +781,9 @@ export function PostComposerCard({
                   {appTags.map((tag) => (
                     <span
                       key={tag}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/30"
+                      className="inline-flex items-center gap-1 rounded-md border border-black/10 bg-white px-2.5 py-1 text-[11px] font-['JetBrains_Mono'] font-extrabold tracking-[0.05em] text-black shadow-[0_1px_4px_rgba(0,0,0,0.25)]"
                     >
-                      {tag}
+                      #{tag.toUpperCase()}
                       <button
                         type="button"
                         onClick={() => setAppTags((prev) => prev.filter((item) => item !== tag))}
