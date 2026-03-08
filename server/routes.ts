@@ -16,6 +16,9 @@ import { requireAuth, hashPassword, verifyPassword, signToken, verifyToken } fro
  *   2. startScheduler() scheduled    (auto-publish pending posts)
  *   3. startScheduler() bulk items   (bulk queue publish)
  *   4. POST /api/thread-chain        (chain post publish)
+ *   5. POST /api/posts/publish-poll
+ *   6. POST /api/posts/publish-gif
+ *   7. POST /api/posts/publish-carousel
  *
  * If you add a NEW publish path, you MUST also:
  *   - Call extractDnaSignals()
@@ -115,6 +118,28 @@ function normalizeAppTag(value: unknown): string | undefined {
 
   if (tags.length === 0) return undefined;
   return tags.join(",");
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isGiphyUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      parsed.protocol === "https:" &&
+      (host === "giphy.com" || host === "media.giphy.com" || host.endsWith(".giphy.com"))
+    );
+  } catch {
+    return false;
+  }
 }
 
 function extractDnaSignals(content: string, publishedAt: Date, mediaUrl?: string | null) {
@@ -1130,6 +1155,197 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // âœ… NEW: Repost
+  
+  app.post("/api/posts/publish-poll", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) {
+      return res.status(401).json({ error: "NO_TOKEN", message: "Connect your Threads account first" });
+    }
+
+    const { content, options, durationHours, topicTag, appTag: rawAppTag } = req.body;
+    const cleanContent = typeof content === "string" ? content.trim() : "";
+    if (!cleanContent) return res.status(400).json({ error: "Content is required" });
+
+    if (!Array.isArray(options)) return res.status(400).json({ error: "Poll options must be an array" });
+    const cleanOptions = options
+      .map((option) => String(option || "").trim())
+      .filter(Boolean);
+    if (cleanOptions.length < 2 || cleanOptions.length > 4) {
+      return res.status(400).json({ error: "Poll requires 2 to 4 options" });
+    }
+    if (cleanOptions.some((option) => option.length > 30)) {
+      return res.status(400).json({ error: "Each poll option must be 30 characters or less" });
+    }
+
+    const pollDuration = Number(durationHours);
+    if (![24, 48, 72, 168].includes(pollDuration)) {
+      return res.status(400).json({ error: "Poll duration must be 24, 48, 72, or 168 hours" });
+    }
+
+    try {
+      const appTag = normalizeAppTag(rawAppTag) || null;
+      const profile = await threads.getProfile(user.threadsAccessToken);
+      const resolvedTopicTag = topicTag || user.defaultTopic || undefined;
+      const postId = await threads.postPoll(
+        user.threadsAccessToken,
+        profile.id,
+        cleanContent,
+        cleanOptions,
+        pollDuration as 24 | 48 | 72 | 168,
+        resolvedTopicTag,
+      );
+      const publishedAt = new Date();
+      const dnaSignals = extractDnaSignals(cleanContent, publishedAt, null);
+
+      await storage.upsertPostMetadata(userId, {
+        threadsPostId: postId,
+        appTag,
+        topicTag: resolvedTopicTag || null,
+        contentPreview: cleanContent.slice(0, 280),
+      });
+
+      const createdPost = await storage.createScheduledPost(userId, {
+        content: cleanContent,
+        scheduledAt: publishedAt,
+        topicTag: resolvedTopicTag || null,
+        mediaUrl: null,
+        mediaType: "POLL",
+        appTag,
+        ...dnaSignals,
+        status: "published",
+        threadsPostId: postId,
+      } as any);
+      scheduleInsightsRefresh(user.threadsAccessToken, createdPost.id, postId);
+      res.json({ success: true, postId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/posts/publish-gif", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) {
+      return res.status(401).json({ error: "NO_TOKEN", message: "Connect your Threads account first" });
+    }
+
+    const { gifUrl, content, topicTag, appTag: rawAppTag } = req.body;
+    const cleanGifUrl = typeof gifUrl === "string" ? gifUrl.trim() : "";
+    if (!cleanGifUrl) return res.status(400).json({ error: "gifUrl is required" });
+    if (!isHttpsUrl(cleanGifUrl)) return res.status(400).json({ error: "gifUrl must start with https://" });
+    if (!isGiphyUrl(cleanGifUrl)) return res.status(400).json({ error: "gifUrl must be from giphy.com or media.giphy.com" });
+
+    const cleanContent = typeof content === "string" ? content.trim() : "";
+    const contentForStorage = cleanContent || "GIF post";
+
+    try {
+      const appTag = normalizeAppTag(rawAppTag) || null;
+      const profile = await threads.getProfile(user.threadsAccessToken);
+      const resolvedTopicTag = topicTag || user.defaultTopic || undefined;
+      const postId = await threads.postGif(
+        user.threadsAccessToken,
+        profile.id,
+        cleanGifUrl,
+        cleanContent || undefined,
+        resolvedTopicTag,
+      );
+      const publishedAt = new Date();
+      const dnaSignals = extractDnaSignals(contentForStorage, publishedAt, cleanGifUrl);
+
+      await storage.upsertPostMetadata(userId, {
+        threadsPostId: postId,
+        appTag,
+        topicTag: resolvedTopicTag || null,
+        contentPreview: contentForStorage.slice(0, 280),
+      });
+
+      const createdPost = await storage.createScheduledPost(userId, {
+        content: contentForStorage,
+        scheduledAt: publishedAt,
+        topicTag: resolvedTopicTag || null,
+        mediaUrl: cleanGifUrl,
+        mediaType: "GIF",
+        appTag,
+        ...dnaSignals,
+        status: "published",
+        threadsPostId: postId,
+      } as any);
+      scheduleInsightsRefresh(user.threadsAccessToken, createdPost.id, postId);
+      res.json({ success: true, postId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/posts/publish-carousel", requireAuth, async (req, res) => {
+    const { userId } = getUser(req);
+    const user = await storage.getUserById(userId);
+    if (!user?.threadsAccessToken) {
+      return res.status(401).json({ error: "NO_TOKEN", message: "Connect your Threads account first" });
+    }
+
+    const { content, mediaItems, topicTag, appTag: rawAppTag } = req.body;
+    if (!Array.isArray(mediaItems) || mediaItems.length < 1 || mediaItems.length > 20) {
+      return res.status(400).json({ error: "mediaItems must be an array of 1 to 20 items" });
+    }
+
+    const normalizedItems = mediaItems
+      .map((item) => {
+        const url = typeof item?.url === "string" ? item.url.trim() : "";
+        const type = item?.type === "VIDEO" ? "VIDEO" : item?.type === "IMAGE" ? "IMAGE" : null;
+        return { url, type };
+      })
+      .filter((item) => item.url && item.type) as Array<{ url: string; type: "IMAGE" | "VIDEO" }>;
+
+    if (normalizedItems.length < 1 || normalizedItems.length > 20) {
+      return res.status(400).json({ error: "mediaItems must contain valid IMAGE/VIDEO entries" });
+    }
+    if (normalizedItems.some((item) => !isHttpsUrl(item.url))) {
+      return res.status(400).json({ error: "Each media item URL must start with https://" });
+    }
+
+    const cleanContent = typeof content === "string" ? content.trim() : "";
+    const contentForStorage = cleanContent || "Carousel post";
+
+    try {
+      const appTag = normalizeAppTag(rawAppTag) || null;
+      const profile = await threads.getProfile(user.threadsAccessToken);
+      const resolvedTopicTag = topicTag || user.defaultTopic || undefined;
+      const postId = await threads.postCarousel(
+        user.threadsAccessToken,
+        profile.id,
+        normalizedItems,
+        cleanContent || undefined,
+        resolvedTopicTag,
+      );
+      const publishedAt = new Date();
+      const dnaSignals = extractDnaSignals(contentForStorage, publishedAt, normalizedItems[0]?.url || null);
+
+      await storage.upsertPostMetadata(userId, {
+        threadsPostId: postId,
+        appTag,
+        topicTag: resolvedTopicTag || null,
+        contentPreview: contentForStorage.slice(0, 280),
+      });
+
+      const createdPost = await storage.createScheduledPost(userId, {
+        content: contentForStorage,
+        scheduledAt: publishedAt,
+        topicTag: resolvedTopicTag || null,
+        mediaUrl: normalizedItems[0]?.url || null,
+        mediaType: "CAROUSEL",
+        appTag,
+        ...dnaSignals,
+        status: "published",
+        threadsPostId: postId,
+      } as any);
+      scheduleInsightsRefresh(user.threadsAccessToken, createdPost.id, postId);
+      res.json({ success: true, postId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
   app.post("/api/posts/:postId/repost", requireAuth, async (req, res) => {
     const { userId } = getUser(req);
     const user = await storage.getUserById(userId);
@@ -2173,3 +2389,4 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   return httpServer;
 }
+

@@ -5,11 +5,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
 import {
-  Plus, Trash2, Play, GripVertical, Loader2, Link2, Hash, Info,
+  Plus, Trash2, Play, GripVertical, Loader2, Link2, Hash, Info, Crown,
 } from "lucide-react";
 
 const MAX_CHARS = 500;
@@ -31,6 +32,7 @@ const POPULAR_TOPICS = [
 export default function ThreadChain() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const [devProMode, setDevProMode] = useState(false);
 
   const [posts, setPosts] = useState<ChainPost[]>([
     { id: "1", content: "", useTopicTag: true },
@@ -45,6 +47,25 @@ export default function ThreadChain() {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [publishedCount, setPublishedCount] = useState(0);
   const [isPublishing, setIsPublishing] = useState(false);
+  const isProPlan = devProMode || user?.plan === "pro";
+
+  useEffect(() => {
+    const syncProMode = () => {
+      try {
+        setDevProMode(localStorage.getItem("threadflow_dev_pro") === "true");
+      } catch {
+        setDevProMode(false);
+      }
+    };
+
+    syncProMode();
+    window.addEventListener("focus", syncProMode);
+    window.addEventListener("threadflow-pro-mode-change", syncProMode);
+    return () => {
+      window.removeEventListener("focus", syncProMode);
+      window.removeEventListener("threadflow-pro-mode-change", syncProMode);
+    };
+  }, []);
 
   useEffect(() => {
     const serialized = sessionStorage.getItem(THREADCHAIN_PREFILL_KEY);
@@ -186,6 +207,25 @@ export default function ThreadChain() {
   };
 
   const validCount = posts.filter(p => p.content.trim()).length;
+
+  if (!isProPlan) {
+    return (
+      <div className="p-6 flex flex-col items-center justify-center h-full text-center gap-4">
+        <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center">
+          <Crown className="w-6 h-6 text-amber-400" />
+        </div>
+        <div>
+          <p className="font-semibold text-foreground">Thread Chain is a Pro feature</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            Enable Pro from the sidebar toggle to unlock Thread Chain.
+          </p>
+        </div>
+        <Link href="/settings">
+          <Button variant="outline">View Plan Settings</Button>
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6 h-full overflow-y-auto">

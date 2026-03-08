@@ -11,7 +11,7 @@ import { Link } from "wouter";
 import {
   Clock, Layers, CheckCircle2, Timer, MessageSquare, ArrowRight,
   PenSquare, Zap, TrendingUp, BarChart2, Repeat2,
-  Quote, Link2, ExternalLink, Sparkles, WandSparkles, Users, AlertCircle, Eye, Crown,
+  Quote, ExternalLink, Sparkles, WandSparkles, Users, AlertCircle, Eye, Crown, Dna as DnaIcon,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/queryClient";
@@ -19,6 +19,21 @@ import { addNotification } from "@/lib/notifications";
 import { useToast } from "@/hooks/use-toast";
 import { PostComposerCard } from "@/components/post-composer-card";
 import { TICKER_MESSAGES, buildInterleavedPool, isConditionMet, shuffleArray } from "@/lib/ticker-messages";
+import {
+  DAY_MS,
+  DAY_NAMES,
+  formatHourLabel,
+  formatNum,
+  getPostLikes,
+  getPostReplies,
+  getPostReposts,
+  getPostTimestampMs,
+  getPostViews,
+  normalizeAppTags,
+  toNumberOrZero,
+  toTitleCase,
+  type DnaPost,
+} from "@/lib/dna-utils";
 import type { ScheduledPost, BulkQueueWithItems, FollowUpThread } from "@shared/schema";
 import { formatDistanceToNow, format } from "date-fns";
 
@@ -52,33 +67,6 @@ type AiKeyStatus = {
   anthropicConfigured: boolean;
   geminiConfigured: boolean;
   perplexityConfigured: boolean;
-};
-
-type DnaPost = {
-  text?: string | null;
-  views?: number | null;
-  likes?: number | null;
-  replies?: number | null;
-  reposts?: number | null;
-  replies_count?: number | null;
-  repost_count?: number | null;
-  hookStyle?: string | null;
-  hourOfDay?: number | null;
-  dayOfWeek?: number | null;
-  topicTag?: string | null;
-  appTag?: string | null;
-  postLength?: number | null;
-  hasCta?: boolean | null;
-  hasMedia?: boolean | null;
-  insightsViews?: number | null;
-  insightsLikes?: number | null;
-  insightsReplies?: number | null;
-  insightsReposts?: number | null;
-  timestamp?: string | null;
-  scheduledAt?: string | null;
-  createdAt?: string | null;
-  like_count?: number | null;
-  view_count?: number | null;
 };
 
 type DnaDataResponse = {
@@ -134,46 +122,6 @@ type MarqueeItem = {
   value: string;
   tone?: "default" | "milestone" | "milestone-major";
 };
-
-function toNumberOrZero(value: unknown): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function getPostViews(post: DnaPost): number {
-  return toNumberOrZero(post.views ?? post.insightsViews ?? post.view_count);
-}
-
-function getPostLikes(post: DnaPost): number {
-  return toNumberOrZero(post.likes ?? post.insightsLikes ?? post.like_count);
-}
-
-function getPostReplies(post: DnaPost): number {
-  return toNumberOrZero(post.replies ?? post.insightsReplies ?? post.replies_count);
-}
-
-function getPostReposts(post: DnaPost): number {
-  return toNumberOrZero(post.repost_count ?? post.reposts ?? post.insightsReposts);
-}
-
-function normalizeAppTags(value: unknown): string[] {
-  if (typeof value !== "string") return [];
-  return value
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-}
-
-function formatNum(value: unknown): string {
-  const n = toNumberOrZero(value);
-  const trimDecimal = (num: number) => {
-    const rounded = Math.round(num * 10) / 10;
-    return Number.isInteger(rounded) ? String(Math.trunc(rounded)) : rounded.toFixed(1);
-  };
-  if (n >= 1000000) return `${trimDecimal(n / 1000000)}M`;
-  if (n >= 1000) return `${trimDecimal(n / 1000)}K`;
-  return `${Math.round(n)}`;
-}
 
 function getNextFollowerMilestone(followers: number): number {
   if (followers < 100) return 100;
@@ -239,23 +187,7 @@ function getActiveFollowerCongratsMilestone(
   return null;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
-const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-function formatHourLabel(hour: number): string {
-  const normalized = ((hour % 24) + 24) % 24;
-  const hour12 = ((normalized + 11) % 12) + 1;
-  const suffix = normalized >= 12 ? "PM" : "AM";
-  return `${hour12} ${suffix}`;
-}
-
-function getPostTimestampMs(post: DnaPost): number | null {
-  const raw = post.scheduledAt || post.timestamp || post.createdAt;
-  if (!raw) return null;
-  const ms = new Date(raw).getTime();
-  return Number.isFinite(ms) ? ms : null;
-}
 
 function formatTimeAgo(ms: number, nowMs: number): string {
   const diff = Math.max(0, nowMs - ms);
@@ -285,15 +217,6 @@ function getTopBreakdownItem(items: PersonaBreakdownItem[] | null | undefined): 
     .filter((item) => typeof item?.label === "string" && String(item.label).trim() && toNumberOrZero(item.value) > 0)
     .sort((a, b) => toNumberOrZero(b.value) - toNumberOrZero(a.value));
   return sorted[0] ?? null;
-}
-
-function toTitleCase(value: string): string {
-  return value
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 function getCountryTimezone(label: string): string {
@@ -1755,7 +1678,7 @@ export default function Dashboard() {
   const lastPublished = publishedPosts.sort((a, b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime())[0];
   const runningQueues = bulkQueues.filter(q => q.status === "running");
   const pendingFollowUps = followUps.filter(f => f.status === "pending");
-  const isProPlan = devProMode;
+  const isProPlan = devProMode || user?.plan === "pro";
 
   const stats = [
     { title: "Scheduled Posts", value: pendingScheduled.length, icon: Clock, description: lastPublished ? `Last: ${formatDistanceToNow(new Date(lastPublished.scheduledAt), { addSuffix: true })}` : "No posts yet", color: "text-chart-1", bg: "bg-chart-1/10" },
@@ -1765,11 +1688,11 @@ export default function Dashboard() {
   ];
 
   const quickActions = [
-    { label: "Thread Chain", href: "/chain", icon: Link2, desc: "Post a series instantly", proOnly: true },
-    { label: "Bulk Post", href: "/bulk", icon: Layers, desc: "Multiple posts in sequence" },
+    { label: "Multi-Post", href: "/multi", icon: Layers, desc: "Thread series or bulk schedule", proOnly: true },
     { label: "Analytics", href: "/analytics", icon: BarChart2, desc: "View performance insights", proOnly: true },
-    { label: "Follow-Up", href: "/followup", icon: Timer, desc: "Schedule a timed reply" },
-    { label: "Comments", href: "/comments", icon: MessageSquare, desc: "Manage replies and likes" },
+    { label: "Performance DNA", href: "/dna", icon: DnaIcon, desc: "Score your next post", proOnly: true },
+    { label: "Follow-Up", href: "/my-content", icon: Timer, desc: "Schedule a timed reply" },
+    { label: "Engagement", href: "/engagement", icon: MessageSquare, desc: "Manage replies and comments" },
   ];
 
   const injectDraftIntoQuickCompose = (text: string) => {
@@ -2044,11 +1967,5 @@ export default function Dashboard() {
     </div>
   );
 }
-
-
-
-
-
-
 
 

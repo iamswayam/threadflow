@@ -5,7 +5,20 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { useLocation } from "wouter";
 import type { LucideIcon } from "lucide-react";
-import { Calendar, Hash, Info, Link2, Send, Sparkles, X } from "lucide-react";
+import {
+  BarChart2,
+  Calendar,
+  Hash,
+  Image as ImageIcon,
+  Info,
+  LayoutGrid,
+  Link2,
+  Search,
+  Send,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import { format } from "date-fns";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,6 +27,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -42,6 +56,8 @@ const composeSchema = z.object({
 });
 
 type ComposeForm = z.infer<typeof composeSchema>;
+type MediaMode = "none" | "image" | "gif" | "poll" | "carousel";
+type GifResult = { id: string; url: string; preview: string };
 
 type RhythmState = {
   counterClass: string;
@@ -49,6 +65,8 @@ type RhythmState = {
   label: string | null;
   labelClass: string;
 };
+
+const GIPHY_API_KEY = import.meta.env.VITE_GIPHY_KEY || "dc6zaTOxFJmzC";
 
 function toDateTimeLocalString(date: Date): string {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -253,6 +271,15 @@ export function PostComposerCard({
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const [isAppTagDropdownOpen, setIsAppTagDropdownOpen] = useState(false);
   const [isSplitSuggestionDismissed, setIsSplitSuggestionDismissed] = useState(false);
+  const [mediaMode, setMediaMode] = useState<MediaMode>("none");
+  const [pollOptions, setPollOptions] = useState<string[]>(["", ""]);
+  const [pollDuration, setPollDuration] = useState<24 | 48 | 72 | 168>(24);
+  const [gifSearch, setGifSearch] = useState("");
+  const [gifResults, setGifResults] = useState<GifResult[]>([]);
+  const [selectedGif, setSelectedGif] = useState<string | null>(null);
+  const [gifSearching, setGifSearching] = useState(false);
+  const [gifCaption, setGifCaption] = useState("");
+  const [carouselItems, setCarouselItems] = useState<Array<{ url: string; type: "IMAGE" | "VIDEO" }>>([]);
   const appTagContainerRef = useRef<HTMLDivElement | null>(null);
 
   const filteredTopics = POPULAR_TOPICS.filter((topic) =>
@@ -281,12 +308,17 @@ export function PostComposerCard({
   const mediaUrl = form.watch("mediaUrl");
   const scheduledAtValue = form.watch("scheduledAt");
   const charCount = content.length;
-  const canShowMedia = mode === "full";
+  const canUseToolbar = Boolean(user?.threadsAccessToken);
+  const canShowCarouselMode = mode === "full";
+  const isMediaModeBlockingSchedule = mediaMode === "gif" || mediaMode === "poll" || mediaMode === "carousel";
   const canShowSchedule = mode === "full" && showSchedule;
   const isEditingScheduled = Boolean(editingScheduledPost);
   const rhythm = getRhythmState(charCount);
   const progressWidth = Math.min((charCount / MAX_CHARS) * 100, 100);
   const showSplitSuggestion = charCount > 450 && !isSplitSuggestionDismissed;
+  const canSubmitCurrentMode = mediaMode === "gif"
+    ? Boolean(content.trim() || gifCaption.trim())
+    : charCount > 0;
   const appTagSuggestions = useMemo(() => {
     const keyword = appTagInput.trim().toLowerCase();
     if (!keyword) return [];
@@ -313,6 +345,43 @@ export function PostComposerCard({
   const showAppTagSuggestions =
     isAppTagDropdownOpen && appTagInput.trim().length > 0 && appTagSuggestions.length > 0;
 
+  const resetMediaState = () => {
+    setMediaMode("none");
+    setPollOptions(["", ""]);
+    setPollDuration(24);
+    setGifSearch("");
+    setGifResults([]);
+    setSelectedGif(null);
+    setGifSearching(false);
+    setGifCaption("");
+    setCarouselItems([]);
+    form.setValue("mediaUrl", "", { shouldDirty: false, shouldTouch: false });
+    form.setValue("mediaType", "TEXT", { shouldDirty: false, shouldTouch: false });
+  };
+
+  const toggleMediaMode = (nextMode: MediaMode) => {
+    const resolvedMode = mediaMode === nextMode ? "none" : nextMode;
+    setMediaMode(resolvedMode);
+    if (resolvedMode !== "gif") {
+      setGifSearch("");
+      setGifResults([]);
+      setSelectedGif(null);
+      setGifSearching(false);
+      setGifCaption("");
+    }
+    if (resolvedMode !== "poll") {
+      setPollOptions(["", ""]);
+      setPollDuration(24);
+    }
+    if (resolvedMode !== "carousel") {
+      setCarouselItems([]);
+    }
+    if (resolvedMode !== "image") {
+      form.setValue("mediaUrl", "", { shouldDirty: false, shouldTouch: false });
+      form.setValue("mediaType", "TEXT", { shouldDirty: false, shouldTouch: false });
+    }
+  };
+
   const resetComposer = () => {
     form.reset();
     setShowScheduleFields(false);
@@ -321,6 +390,7 @@ export function PostComposerCard({
     setAppTagInput("");
     setHighlightedIndex(-1);
     setIsAppTagDropdownOpen(false);
+    resetMediaState();
   };
 
   useEffect(() => {
@@ -336,6 +406,58 @@ export function PostComposerCard({
   useEffect(() => {
     setHighlightedIndex(-1);
   }, [appTagInput]);
+
+  useEffect(() => {
+    if (!canUseToolbar && mediaMode !== "none") {
+      resetMediaState();
+    }
+  }, [canUseToolbar, mediaMode]);
+
+  useEffect(() => {
+    if (mediaMode !== "gif") {
+      setGifSearching(false);
+      setGifResults([]);
+      return;
+    }
+
+    const query = gifSearch.trim();
+    if (!query) {
+      setGifResults([]);
+      setGifSearching(false);
+      return;
+    }
+
+    let isCancelled = false;
+    const timeout = window.setTimeout(async () => {
+      setGifSearching(true);
+      try {
+        const response = await fetch(
+          `https://api.giphy.com/v1/gifs/search?api_key=${encodeURIComponent(GIPHY_API_KEY)}&q=${encodeURIComponent(query)}&limit=9&rating=g`,
+        );
+        const data = await response.json().catch(() => ({}));
+        if (isCancelled) return;
+        const items: GifResult[] = Array.isArray(data?.data)
+          ? data.data
+              .map((item: any) => ({
+                id: String(item?.id || ""),
+                url: String(item?.images?.original?.url || ""),
+                preview: String(item?.images?.fixed_width_downsampled?.url || item?.images?.fixed_width?.url || ""),
+              }))
+              .filter((item: GifResult) => item.id && item.url && item.preview)
+          : [];
+        setGifResults(items);
+      } catch {
+        if (!isCancelled) setGifResults([]);
+      } finally {
+        if (!isCancelled) setGifSearching(false);
+      }
+    }, 500);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [gifSearch, mediaMode]);
 
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
@@ -378,11 +500,21 @@ export function PostComposerCard({
         .filter(Boolean),
     );
     setAppTagInput("");
+    setMediaMode(editingScheduledPost.mediaUrl ? "image" : "none");
+    setPollOptions(["", ""]);
+    setPollDuration(24);
+    setGifSearch("");
+    setGifResults([]);
+    setSelectedGif(null);
+    setGifSearching(false);
+    setGifCaption("");
+    setCarouselItems([]);
     setShowScheduleFields(true);
   }, [editingScheduledPost?.id, form, user?.defaultTopic]);
 
   const publishMutation = useMutation({
-    mutationFn: (data: any) => apiRequest("POST", "/api/posts/publish", data),
+    mutationFn: ({ endpoint, payload }: { endpoint: string; payload: any }) =>
+      apiRequest("POST", endpoint, payload),
     onSuccess: () => {
       toast({
         title: "Post published!",
@@ -437,16 +569,86 @@ export function PostComposerCard({
   });
 
   const onPostNow = (data: ComposeForm) => {
+    const topicTag = topicInput.trim() || undefined;
+    const appTag = appTags.join(",") || undefined;
+
+    if (mediaMode === "gif") {
+      if (!selectedGif) {
+        toast({ title: "Please select a GIF first", variant: "destructive" });
+        return;
+      }
+      publishMutation.mutate({
+        endpoint: "/api/posts/publish-gif",
+        payload: {
+          gifUrl: selectedGif,
+          content: data.content.trim() || gifCaption.trim() || undefined,
+          topicTag,
+          appTag,
+        },
+      });
+      return;
+    }
+
+    if (mediaMode === "poll") {
+      const options = pollOptions.map((option) => option.trim()).filter(Boolean);
+      if (options.length < 2) {
+        toast({ title: "Add at least 2 poll options", variant: "destructive" });
+        return;
+      }
+      publishMutation.mutate({
+        endpoint: "/api/posts/publish-poll",
+        payload: {
+          content: data.content,
+          options,
+          durationHours: pollDuration,
+          topicTag,
+          appTag,
+        },
+      });
+      return;
+    }
+
+    if (mediaMode === "carousel") {
+      const mediaItems = carouselItems
+        .map((item) => ({ url: item.url.trim(), type: item.type }))
+        .filter((item) => item.url);
+      if (mediaItems.length < 1) {
+        toast({ title: "Add at least one image URL", variant: "destructive" });
+        return;
+      }
+      publishMutation.mutate({
+        endpoint: "/api/posts/publish-carousel",
+        payload: {
+          content: data.content.trim() || undefined,
+          mediaItems,
+          topicTag,
+          appTag,
+        },
+      });
+      return;
+    }
+
     publishMutation.mutate({
-      content: data.content,
-      mediaUrl: data.mediaUrl || undefined,
-      mediaType: data.mediaType,
-      topicTag: topicInput.trim() || undefined,
-      appTag: appTags.join(",") || undefined,
+      endpoint: "/api/posts/publish",
+      payload: {
+        content: data.content,
+        mediaUrl: mediaMode === "image" ? data.mediaUrl || undefined : undefined,
+        mediaType: mediaMode === "image" ? data.mediaType : "TEXT",
+        topicTag,
+        appTag,
+      },
     });
   };
 
   const onSchedule = (data: ComposeForm) => {
+    if (isMediaModeBlockingSchedule) {
+      toast({
+        title: "Scheduling is only available for text and image posts",
+        description: "Post this now instead.",
+      });
+      onPostNow(data);
+      return;
+    }
     if (!data.scheduledAt) {
       toast({
         title: "Pick a date",
@@ -457,8 +659,8 @@ export function PostComposerCard({
     }
     scheduleMutation.mutate({
       content: data.content,
-      mediaUrl: data.mediaUrl || null,
-      mediaType: data.mediaType,
+      mediaUrl: mediaMode === "image" ? data.mediaUrl || null : null,
+      mediaType: mediaMode === "image" ? data.mediaType : "TEXT",
       topicTag: topicInput.trim() || undefined,
       appTag: appTags.join(",") || undefined,
       scheduledAt: new Date(data.scheduledAt).toISOString(),
@@ -489,6 +691,13 @@ export function PostComposerCard({
     });
   };
 
+  const handlePostNowClick = () => {
+    if (mediaMode === "gif" && !form.getValues("content").trim() && gifCaption.trim()) {
+      form.setValue("content", gifCaption.trim(), { shouldDirty: true, shouldTouch: true });
+    }
+    form.handleSubmit(onPostNow)();
+  };
+
   const splitIntoThreadChain = () => {
     const chunks = splitIntoThreadChunks(form.getValues("content"), MAX_CHARS);
     if (chunks.length === 0) {
@@ -501,7 +710,7 @@ export function PostComposerCard({
     }
 
     sessionStorage.setItem(THREADCHAIN_PREFILL_KEY, JSON.stringify(chunks));
-    setLocation("/chain");
+    setLocation("/multi");
   };
 
   const addAppTag = (rawTagValue: string) => {
@@ -641,6 +850,312 @@ export function PostComposerCard({
                     </div>
                   </FormControl>
                   <div className="mt-2 space-y-1.5">
+                    {canUseToolbar ? (
+                      <div className="flex items-center gap-1 py-1">
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                  "h-7 px-2",
+                                  mediaMode === "image" ? "bg-primary/10 text-primary rounded" : "text-muted-foreground",
+                                )}
+                                onClick={() => toggleMediaMode("image")}
+                              >
+                                <ImageIcon className="w-3.5 h-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="text-xs">Add image or video</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                  "h-7 px-2 text-[11px] font-semibold",
+                                  mediaMode === "gif" ? "bg-primary/10 text-primary rounded" : "text-muted-foreground",
+                                )}
+                                onClick={() => toggleMediaMode("gif")}
+                              >
+                                GIF
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="text-xs">Add GIF</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                  "h-7 px-2",
+                                  mediaMode === "poll" ? "bg-primary/10 text-primary rounded" : "text-muted-foreground",
+                                )}
+                                onClick={() => toggleMediaMode("poll")}
+                              >
+                                <BarChart2 className="w-3.5 h-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="text-xs">Create a poll</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        {canShowCarouselMode ? (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className={cn(
+                                    "h-7 px-2",
+                                    mediaMode === "carousel" ? "bg-primary/10 text-primary rounded" : "text-muted-foreground",
+                                  )}
+                                  onClick={() => toggleMediaMode("carousel")}
+                                >
+                                  <LayoutGrid className="w-3.5 h-3.5" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="text-xs">Add multiple images</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {canUseToolbar && mediaMode === "image" ? (
+                      <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
+                        <FormField
+                          control={form.control}
+                          name="mediaUrl"
+                          render={({ field }) => (
+                            <FormItem>
+                              <div className="flex items-center gap-2">
+                                <Link2 className="w-4 h-4 text-muted-foreground" />
+                                <FormControl>
+                                  <Input
+                                    placeholder="Media URL (optional)"
+                                    className="flex-1"
+                                    data-testid={testIds?.mediaUrl}
+                                    {...field}
+                                  />
+                                </FormControl>
+                              </div>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        {mediaUrl ? (
+                          <FormField
+                            control={form.control}
+                            name="mediaType"
+                            render={({ field }) => (
+                              <FormItem>
+                                <div className="flex items-center gap-2">
+                                  <Label className="text-sm text-muted-foreground w-20">Media type</Label>
+                                  <div className="flex gap-2">
+                                    {(["IMAGE", "VIDEO"] as const).map((type) => (
+                                      <button
+                                        key={type}
+                                        type="button"
+                                        onClick={() => field.onChange(type)}
+                                        className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${
+                                          field.value === type
+                                            ? "bg-primary text-primary-foreground border-primary"
+                                            : "border-border text-muted-foreground"
+                                        }`}
+                                      >
+                                        {type}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </FormItem>
+                            )}
+                          />
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {canUseToolbar && mediaMode === "gif" ? (
+                      <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
+                        <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2">
+                          <Search className="w-3.5 h-3.5 text-muted-foreground" />
+                          <Input
+                            value={gifSearch}
+                            onChange={(event) => setGifSearch(event.target.value)}
+                            placeholder="Search GIFs..."
+                            className="border-0 px-0 focus-visible:ring-0"
+                          />
+                        </div>
+                        {gifSearching ? (
+                          <p className="text-xs text-muted-foreground">Searching GIFs...</p>
+                        ) : null}
+                        {!selectedGif && gifResults.length > 0 ? (
+                          <div className="grid grid-cols-3 gap-2">
+                            {gifResults.map((gif) => (
+                              <button
+                                key={gif.id}
+                                type="button"
+                                className="overflow-hidden rounded-md border border-border hover:border-primary/50"
+                                onClick={() => {
+                                  setSelectedGif(gif.url);
+                                  setGifResults([]);
+                                  setGifSearch("");
+                                }}
+                              >
+                                <img src={gif.preview} alt="GIF result" className="h-20 w-full object-cover" />
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        {selectedGif ? (
+                          <div className="space-y-2">
+                            <img src={selectedGif} alt="Selected GIF" className="max-h-32 rounded-md border border-border object-cover" />
+                            <div className="flex items-center gap-2">
+                              <Input
+                                value={gifCaption}
+                                onChange={(event) => setGifCaption(event.target.value)}
+                                placeholder="Add a caption..."
+                              />
+                              <Button type="button" size="sm" variant="outline" onClick={() => setSelectedGif(null)}>
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {canUseToolbar && mediaMode === "poll" ? (
+                      <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
+                        <p className="text-xs font-medium text-muted-foreground">Poll Options</p>
+                        {pollOptions.map((option, index) => (
+                          <div key={`poll-option-${index}`} className="flex items-center gap-2">
+                            <Input
+                              placeholder={`Option ${index + 1}`}
+                              value={option}
+                              maxLength={30}
+                              onChange={(event) => {
+                                const next = [...pollOptions];
+                                next[index] = event.target.value;
+                                setPollOptions(next);
+                              }}
+                            />
+                            {index >= 2 ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setPollOptions((prev) => prev.filter((_, idx) => idx !== index))}
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </Button>
+                            ) : null}
+                          </div>
+                        ))}
+                        {pollOptions.length < 4 ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs px-2 h-7"
+                            onClick={() => setPollOptions((prev) => [...prev, ""])}
+                          >
+                            + Add option
+                          </Button>
+                        ) : null}
+                        <div className="flex items-center gap-2 pt-1">
+                          <span className="text-xs text-muted-foreground">Duration:</span>
+                          <Select
+                            value={String(pollDuration)}
+                            onValueChange={(value) => {
+                              const parsed = Number(value);
+                              if ([24, 48, 72, 168].includes(parsed)) {
+                                setPollDuration(parsed as 24 | 48 | 72 | 168);
+                              }
+                            }}
+                          >
+                            <SelectTrigger className="w-36 h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="24">24 hours</SelectItem>
+                              <SelectItem value="48">48 hours</SelectItem>
+                              <SelectItem value="72">72 hours</SelectItem>
+                              <SelectItem value="168">7 days</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {canUseToolbar && canShowCarouselMode && mediaMode === "carousel" ? (
+                      <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Add up to 20 images or videos</p>
+                        {carouselItems.map((item, index) => (
+                          <div key={`carousel-item-${index}`} className="flex items-center gap-2">
+                            <span className="w-4 text-xs text-muted-foreground">{index + 1}</span>
+                            <Input
+                              placeholder="Image or video URL..."
+                              value={item.url}
+                              onChange={(event) => {
+                                const next = [...carouselItems];
+                                next[index] = { ...next[index], url: event.target.value };
+                                setCarouselItems(next);
+                              }}
+                            />
+                            <Select
+                              value={item.type}
+                              onValueChange={(value) => {
+                                if (value !== "IMAGE" && value !== "VIDEO") return;
+                                const next = [...carouselItems];
+                                next[index] = { ...next[index], type: value };
+                                setCarouselItems(next);
+                              }}
+                            >
+                              <SelectTrigger className="w-20 h-8 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="IMAGE">IMG</SelectItem>
+                                <SelectItem value="VIDEO">VID</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setCarouselItems((prev) => prev.filter((_, idx) => idx !== index))}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        ))}
+                        {carouselItems.length < 20 ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs px-2 h-7"
+                            onClick={() => setCarouselItems((prev) => [...prev, { url: "", type: "IMAGE" }])}
+                          >
+                            + Add item
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
+
                     <div className="flex items-center justify-end gap-2">
                       <span className={cn("text-xs font-mono transition-colors duration-200", rhythm.counterClass)}>
                         {charCount}/{MAX_CHARS}
@@ -890,61 +1405,6 @@ export function PostComposerCard({
               ) : null}
             </div>
 
-            {canShowMedia ? (
-              <div className="space-y-3">
-                <FormField
-                  control={form.control}
-                  name="mediaUrl"
-                  render={({ field }) => (
-                    <FormItem>
-                      <div className="flex items-center gap-2">
-                        <Link2 className="w-4 h-4 text-muted-foreground" />
-                        <FormControl>
-                          <Input
-                            placeholder="Media URL (optional)"
-                            className="flex-1"
-                            data-testid={testIds?.mediaUrl}
-                            {...field}
-                          />
-                        </FormControl>
-                      </div>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                {mediaUrl ? (
-                  <FormField
-                    control={form.control}
-                    name="mediaType"
-                    render={({ field }) => (
-                      <FormItem>
-                        <div className="flex items-center gap-2">
-                          <Label className="text-sm text-muted-foreground w-20">Media type</Label>
-                          <div className="flex gap-2">
-                            {(["IMAGE", "VIDEO"] as const).map((type) => (
-                              <button
-                                key={type}
-                                type="button"
-                                onClick={() => field.onChange(type)}
-                                className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${
-                                  field.value === type
-                                    ? "bg-primary text-primary-foreground border-primary"
-                                    : "border-border text-muted-foreground"
-                                }`}
-                              >
-                                {type}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      </FormItem>
-                    )}
-                  />
-                ) : null}
-              </div>
-            ) : null}
-
             {canShowSchedule && (showScheduleFields || isEditingScheduled) ? (
               <FormField
                 control={form.control}
@@ -1086,8 +1546,8 @@ export function PostComposerCard({
                 <>
                   <Button
                     type="button"
-                    onClick={form.handleSubmit(onPostNow)}
-                    disabled={publishMutation.isPending || charCount === 0}
+                    onClick={handlePostNowClick}
+                    disabled={publishMutation.isPending || !canSubmitCurrentMode}
                     data-testid={testIds?.postNowButton}
                   >
                     <Send className="w-4 h-4 mr-2" />
@@ -1111,6 +1571,14 @@ export function PostComposerCard({
                         type="button"
                         variant="secondary"
                         onClick={() => {
+                          if (isMediaModeBlockingSchedule) {
+                            toast({
+                              title: "Scheduling is only available for text and image posts",
+                              description: "Post this now instead.",
+                            });
+                            handlePostNowClick();
+                            return;
+                          }
                           const current = form.getValues("scheduledAt");
                           if (!current) {
                             form.setValue("scheduledAt", toDateTimeLocalString(getSmartDefaultScheduleTime(new Date())), {

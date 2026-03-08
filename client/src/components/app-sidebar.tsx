@@ -4,31 +4,45 @@ import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, SidebarFooter,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, PenSquare, Layers, Timer, MessageSquare, Inbox, Settings, LogOut, Bookmark, Crown } from "lucide-react";
+import {
+  LayoutDashboard,
+  PenSquare,
+  Layers,
+  MessageCircle,
+  Settings,
+  LogOut,
+  Bookmark,
+  Crown,
+  BarChart2,
+  Dna as DnaIcon,
+} from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { ThreadFlowLogo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "Compose", url: "/compose", icon: PenSquare },
-  { title: "Bulk Post", url: "/bulk", icon: Layers },
-  { title: "Follow-Up", url: "/followup", icon: Timer },
-  { title: "Comments", url: "/comments", icon: MessageSquare },
-  { title: "Reply Center", url: "/reply-center", icon: Inbox },
+  { title: "Multi-Post", url: "/multi", icon: Layers, proOnly: true },
+  { title: "Engagement", url: "/engagement", icon: MessageCircle },
   { title: "My Content", url: "/my-content", icon: Bookmark },
+  { title: "Analytics", url: "/analytics", icon: BarChart2, proOnly: true },
+  { title: "Performance DNA", url: "/dna", icon: DnaIcon, proOnly: true },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
 export function AppSidebar() {
   const [location] = useLocation();
   const { user, signout, hasThreadsConnected } = useAuth();
+  const { toast } = useToast();
   const [devProMode, setDevProMode] = useState(false);
   const [proStateReady, setProStateReady] = useState(false);
 
   const userInitial = user?.email?.[0]?.toUpperCase() || "U";
+  const isProPlan = devProMode || user?.plan === "pro";
 
   useEffect(() => {
     try {
@@ -117,7 +131,17 @@ export function AppSidebar() {
                       data-testid={`nav-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
                       className={isActive ? "relative" : ""}
                     >
-                      <Link href={item.url}>
+                      <Link
+                        href={item.url}
+                        onClick={(event) => {
+                          if (!item.proOnly || isProPlan) return;
+                          event.preventDefault();
+                          toast({
+                            title: "Feature available in Pro",
+                            description: `${item.title} is available on Pro. Turn on Pro from the sidebar to unlock it.`,
+                          });
+                        }}
+                      >
                         {isActive && (
                           <span
                             className="absolute inset-0 rounded-md pointer-events-none"
@@ -126,6 +150,7 @@ export function AppSidebar() {
                         )}
                         <item.icon className={`w-4 h-4 ${isActive ? "text-sidebar-primary" : ""}`} />
                         <span className={isActive ? "text-sidebar-primary font-medium" : ""}>{item.title}</span>
+                        {item.proOnly ? <Crown className="ml-auto w-3.5 h-3.5 text-orange-400" /> : null}
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

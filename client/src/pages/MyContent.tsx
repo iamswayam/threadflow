@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -26,6 +27,7 @@ import {
   Sparkles,
   RotateCcw,
   Pencil,
+  CornerDownRight,
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -209,6 +211,9 @@ export default function MyContent() {
   const [tagSearchInput, setTagSearchInput] = useState("");
   const [expandedChainRoots, setExpandedChainRoots] = useState<Record<string, boolean>>({});
   const [sortBy, setSortBy] = useState<"date" | "views" | "likes" | "replies">("date");
+  const [followUpPostId, setFollowUpPostId] = useState<string | null>(null);
+  const [followUpContent, setFollowUpContent] = useState("");
+  const [followUpDate, setFollowUpDate] = useState("");
 
   const isDeletedView = selectedTag === DELETED_TAG;
   const isProPlan = devProMode;
@@ -390,6 +395,29 @@ export default function MyContent() {
     },
   });
 
+  const scheduleFollowUpMutation = useMutation({
+    mutationFn: (payload: {
+      originalPostId: string;
+      content: string;
+      scheduledAt: string;
+      originalPostContent?: string;
+    }) => apiRequest("POST", "/api/follow-ups", payload),
+    onSuccess: () => {
+      toast({ title: "Follow-up scheduled" });
+      setFollowUpPostId(null);
+      setFollowUpContent("");
+      setFollowUpDate("");
+      queryClient.invalidateQueries({ queryKey: ["/api/follow-ups"] });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Failed to schedule",
+        description: err?.message || "Unable to schedule follow-up",
+        variant: "destructive",
+      });
+    },
+  });
+
   const getTagCount = (tag: string) =>
     allPosts.filter((p) => p.appTag?.split(",").map((t) => t.trim()).includes(tag)).length;
   const visibleTags = tags.filter((tag) => getTagCount(tag) > 0);
@@ -565,6 +593,9 @@ export default function MyContent() {
       postTimeValue && !Number.isNaN(postTimeValue.getTime())
         ? format(postTimeValue, "MMM d, h:mm a")
         : "Unknown time";
+    const canScheduleFollowUp =
+      !isDeletedView && post.status === "published" && Boolean(post.threadsPostId);
+    const isFollowUpFormOpen = canScheduleFollowUp && followUpPostId === post.threadsPostId;
 
     return (
       <div
@@ -761,16 +792,35 @@ export default function MyContent() {
                     {postTimeText}
                   </div>
                   {post.threadsPostId && (
-                    <a
-                      href={`https://threads.net/t/${post.threadsPostId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-xs font-medium text-primary/90 hover:text-primary leading-none"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                      View on Threads
-                    </a>
+                    <div className="inline-flex items-center gap-1">
+                      <a
+                        href={`https://threads.net/t/${post.threadsPostId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs font-medium text-primary/90 hover:text-primary leading-none"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        View on Threads
+                      </a>
+                      {canScheduleFollowUp && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-1.5 text-xs text-muted-foreground hover:text-primary"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFollowUpPostId(post.threadsPostId ?? null);
+                            setFollowUpContent("");
+                            setFollowUpDate("");
+                          }}
+                        >
+                          <CornerDownRight className="w-3 h-3 mr-1" />
+                          Follow-Up
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </>
               )}
@@ -808,6 +858,69 @@ export default function MyContent() {
                 Cancel
               </Button>
             </div>
+          </div>
+        )}
+
+        {isFollowUpFormOpen && (
+          <div
+            className="mt-3 p-3 rounded-lg border border-primary/20 bg-primary/5 space-y-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-xs font-medium text-primary">Schedule a Follow-Up Reply</p>
+
+            <Textarea
+              placeholder="Write your follow-up reply..."
+              value={followUpContent}
+              onChange={(e) => setFollowUpContent(e.target.value)}
+              className="text-sm min-h-[80px]"
+              maxLength={500}
+            />
+
+            <div className="flex items-center gap-2">
+              <input
+                type="datetime-local"
+                value={followUpDate}
+                onChange={(e) => setFollowUpDate(e.target.value)}
+                className="text-xs border rounded px-2 py-1 bg-background flex-1"
+                min={new Date().toISOString().slice(0, 16)}
+              />
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (!followUpPostId) return;
+                  const scheduledAt = new Date(followUpDate);
+                  if (Number.isNaN(scheduledAt.getTime())) return;
+                  scheduleFollowUpMutation.mutate({
+                    originalPostId: followUpPostId,
+                    content: followUpContent.trim(),
+                    scheduledAt: scheduledAt.toISOString(),
+                    originalPostContent: post.content,
+                  });
+                }}
+                disabled={
+                  !followUpContent.trim() ||
+                  !followUpDate ||
+                  scheduleFollowUpMutation.isPending
+                }
+              >
+                {scheduleFollowUpMutation.isPending ? "Scheduling..." : "Schedule"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setFollowUpPostId(null);
+                  setFollowUpContent("");
+                  setFollowUpDate("");
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              This will be posted as a reply to your original post
+            </p>
           </div>
         )}
       </div>

@@ -108,19 +108,26 @@ export async function getFollowersCountInRange(
 }
 
 export async function createPostContainer(token: string, userId: string, params: {
-  text: string; media_type?: "TEXT" | "IMAGE" | "VIDEO";
+  text?: string; media_type?: "TEXT" | "IMAGE" | "VIDEO" | "GIF" | "CAROUSEL";
   image_url?: string; video_url?: string; reply_to_id?: string;
   topic_tag?: string; quote_post_id?: string;
+  gif_url?: string; poll_question?: string; poll_options?: string;
+  poll_duration?: string | number; children?: string; is_carousel_item?: boolean;
 }): Promise<{ id: string }> {
-  const body = new URLSearchParams({
-    media_type: params.media_type || "TEXT",
-    text: params.text,
-  });
+  const body = new URLSearchParams();
+  body.set("media_type", params.media_type || "TEXT");
+  if (typeof params.text === "string") body.set("text", params.text);
   if (params.image_url) body.set("image_url", params.image_url);
   if (params.video_url) body.set("video_url", params.video_url);
   if (params.reply_to_id) body.set("reply_to_id", params.reply_to_id);
   if (params.topic_tag) body.set("topic_tag", params.topic_tag);
-  if (params.quote_post_id) body.set("quote_post_id", params.quote_post_id); // ✅ quote
+  if (params.quote_post_id) body.set("quote_post_id", params.quote_post_id);
+  if (params.gif_url) body.set("gif_url", params.gif_url);
+  if (params.poll_question) body.set("poll_question", params.poll_question);
+  if (params.poll_options) body.set("poll_options", params.poll_options);
+  if (params.poll_duration !== undefined) body.set("poll_duration", String(params.poll_duration));
+  if (params.children) body.set("children", params.children);
+  if (params.is_carousel_item) body.set("is_carousel_item", "true");
 
   return threadsRequest(token, `/${userId}/threads`, {
     method: "POST",
@@ -128,7 +135,6 @@ export async function createPostContainer(token: string, userId: string, params:
     body: body.toString(),
   });
 }
-
 export async function publishPost(token: string, userId: string, containerId: string): Promise<{ id: string }> {
   const body = new URLSearchParams({ creation_id: containerId });
   return threadsRequest(token, `/${userId}/threads_publish`, {
@@ -177,6 +183,112 @@ export async function repostThread(token: string, userId: string, postId: string
 // ✅ Quote post — text + the quoted post id
 export async function quoteThread(token: string, userId: string, text: string, quotePostId: string, topicTag?: string): Promise<string> {
   return postThread(token, userId, text, { quotePostId, topicTag });
+}
+function isValidGiphyUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      parsed.protocol === "https:" &&
+      (host === "giphy.com" || host.endsWith(".giphy.com") || host === "media.giphy.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function postPoll(
+  token: string,
+  userId: string,
+  text: string,
+  options: string[],
+  durationHours: 24 | 48 | 72 | 168,
+  topicTag?: string,
+): Promise<string> {
+  const cleanText = String(text || "").trim();
+  const cleanOptions = options
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+
+  if (!cleanText) throw new Error("Poll content is required");
+  if (cleanOptions.length < 2 || cleanOptions.length > 4) {
+    throw new Error("Poll requires 2 to 4 options");
+  }
+
+  const container = await createPostContainer(token, userId, {
+    media_type: "TEXT",
+    text: cleanText,
+    topic_tag: topicTag,
+    poll_question: cleanText,
+    poll_options: JSON.stringify(cleanOptions),
+    poll_duration: durationHours,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  const published = await publishPost(token, userId, container.id);
+  return published.id;
+}
+
+export async function postGif(
+  token: string,
+  userId: string,
+  gifUrl: string,
+  text?: string,
+  topicTag?: string,
+): Promise<string> {
+  const cleanGifUrl = String(gifUrl || "").trim();
+  if (!cleanGifUrl) throw new Error("GIF URL is required");
+  if (!isValidGiphyUrl(cleanGifUrl)) throw new Error("GIF URL must be a valid Giphy URL");
+
+  const container = await createPostContainer(token, userId, {
+    media_type: "GIF",
+    gif_url: cleanGifUrl,
+    text: typeof text === "string" && text.trim() ? text.trim() : undefined,
+    topic_tag: topicTag,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  const published = await publishPost(token, userId, container.id);
+  return published.id;
+}
+
+export async function postCarousel(
+  token: string,
+  userId: string,
+  mediaItems: Array<{ url: string; type: "IMAGE" | "VIDEO" }>,
+  text?: string,
+  topicTag?: string,
+): Promise<string> {
+  if (!Array.isArray(mediaItems) || mediaItems.length === 0) {
+    throw new Error("Carousel requires at least one media item");
+  }
+
+  const childContainerIds: string[] = [];
+  for (let i = 0; i < mediaItems.length; i++) {
+    const item = mediaItems[i];
+    const itemUrl = String(item?.url || "").trim();
+    const itemType = item?.type === "VIDEO" ? "VIDEO" : "IMAGE";
+
+    if (!itemUrl) throw new Error(`Carousel item ${i + 1} is missing a URL`);
+    if (i > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    const itemContainer = await createPostContainer(token, userId, {
+      media_type: itemType,
+      image_url: itemType === "IMAGE" ? itemUrl : undefined,
+      video_url: itemType === "VIDEO" ? itemUrl : undefined,
+      is_carousel_item: true,
+    });
+    childContainerIds.push(itemContainer.id);
+  }
+
+  const carouselContainer = await createPostContainer(token, userId, {
+    media_type: "CAROUSEL",
+    children: childContainerIds.join(","),
+    text: typeof text === "string" && text.trim() ? text.trim() : undefined,
+    topic_tag: topicTag,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  const published = await publishPost(token, userId, carouselContainer.id);
+  return published.id;
 }
 
 // ✅ Account-level insights — views, followers, etc.
@@ -582,4 +694,5 @@ export async function postThreadChain(
 
   return publishedIds;
 }
+
 

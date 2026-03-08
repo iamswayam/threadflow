@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation, Redirect } from "wouter";
+﻿import { Switch, Route, useLocation, Redirect } from "wouter";
 import { useEffect, useState } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -15,16 +15,14 @@ import { AnimatePresence, motion } from "framer-motion";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import Compose from "@/pages/compose";
-import BulkPost from "@/pages/bulk";
-import FollowUp from "@/pages/followup";
-import Comments from "@/pages/comments";
-import ReplyCenter from "@/pages/reply-center";
+import MultiPost from "@/pages/MultiPost";
+import Engagement from "@/pages/Engagement";
 import Settings from "@/pages/settings";
 import Login from "@/pages/login";
 import Signup from "@/pages/signup";
 import ConnectThreads from "@/pages/connect-threads";
-import ThreadChain from "@/pages/ThreadChain"; // ✅ NEW
-import Analytics from "@/pages/Analytics"; // ✅ NEW
+import Analytics from "@/pages/Analytics"; // âœ… NEW
+import Dna from "@/pages/Dna";
 import MyContent from "@/pages/MyContent"; // NEW
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -216,12 +214,15 @@ function ProtectedRouter() {
       <Switch location={location}>
         <Route path="/" component={() => <AnimatedRoute component={Dashboard} path="/" />} />
         <Route path="/compose" component={() => <AnimatedRoute component={Compose} path="/compose" />} />
-        <Route path="/bulk" component={() => <AnimatedRoute component={BulkPost} path="/bulk" />} />
-        <Route path="/chain" component={() => <AnimatedRoute component={ThreadChain} path="/chain" />} />
+        <Route path="/multi" component={() => <AnimatedRoute component={MultiPost} path="/multi" />} />
+        <Route path="/bulk" component={() => <Redirect to="/multi" />} />
+        <Route path="/chain" component={() => <Redirect to="/multi" />} />
         <Route path="/analytics" component={() => <AnimatedRoute component={Analytics} path="/analytics" />} />
-        <Route path="/followup" component={() => <AnimatedRoute component={FollowUp} path="/followup" />} />
-        <Route path="/comments" component={() => <AnimatedRoute component={Comments} path="/comments" />} />
-        <Route path="/reply-center" component={() => <AnimatedRoute component={ReplyCenter} path="/reply-center" />} />
+        <Route path="/dna" component={() => <AnimatedRoute component={Dna} path="/dna" />} />
+        <Route path="/followup" component={() => <Redirect to="/my-content" />} />
+        <Route path="/engagement" component={() => <AnimatedRoute component={Engagement} path="/engagement" />} />
+        <Route path="/comments" component={() => <Redirect to="/engagement" />} />
+        <Route path="/reply-center" component={() => <Redirect to="/engagement" />} />
         <Route path="/my-content" component={() => <AnimatedRoute component={MyContent} path="/my-content" />} />
         <Route path="/settings" component={() => <AnimatedRoute component={Settings} path="/settings" />} />
         <Route component={NotFound} />
@@ -392,3 +393,4 @@ function App() {
 }
 
 export default App;
+
