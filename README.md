@@ -403,4 +403,4 @@ README.md
 
 ## License
 
-MIT
+MIT.
